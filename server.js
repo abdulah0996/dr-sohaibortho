@@ -52,18 +52,31 @@ async function ensureInitialData() {
   }
 }
 
-async function main() {
-  await connectDatabase();
-  await ensureInitialData();
-
+function main() {
+  // 1. Create Express App
   const app = createApp();
 
-  const server = app.listen(config.port, () => {
-    console.log(`Dr. Sohaib WhatsApp AI Chatbot & Appointment System running on http://localhost:${config.port}`);
-  });
+  // 2. Start Listening IMMEDIATELY on 0.0.0.0 and process.env.PORT / config.port
+  const host = "0.0.0.0";
+  const port = config.port || process.env.PORT || 3000;
 
-  startReminderScheduler();
-  startOwnerEmailScheduler();
+  const server = app.listen(port, host, () => {
+    console.log(`Dr. Sohaib WhatsApp AI Chatbot & Appointment System running on http://${host}:${port}`);
+
+    // 3. Connect to MongoDB asynchronously after server is listening
+    connectDatabase()
+      .then(async () => {
+        // 4. Run seeding and background schedulers after database connection succeeds
+        await ensureInitialData();
+        startReminderScheduler();
+        startOwnerEmailScheduler();
+        console.log("Background services and schedulers started successfully.");
+      })
+      .catch((error) => {
+        // Log error safely without terminating Express server process
+        console.error("Database background startup error:", error.stack || error);
+      });
+  });
 
   const shutdown = async (signal) => {
     console.log(`${signal} received. Shutting down gracefully.`);
@@ -74,7 +87,4 @@ async function main() {
   process.on("SIGINT", () => shutdown("SIGINT"));
 }
 
-main().catch((error) => {
-  console.error("Startup failed:", error.message);
-  process.exit(1);
-});
+main();

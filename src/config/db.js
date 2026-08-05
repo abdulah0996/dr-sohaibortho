@@ -12,6 +12,11 @@ async function connectDatabase() {
     });
     console.log("MongoDB connected to", config.mongoUri);
   } catch (error) {
+    if (config.isProduction || process.env.NODE_ENV === "production") {
+      console.error("Production MongoDB connection failed:", error.message || error);
+      throw error;
+    }
+
     console.log("External MongoDB unavailable. Using temporary in-memory database.");
     console.log("Data will be removed when the server stops.");
     try {
@@ -19,6 +24,7 @@ async function connectDatabase() {
       mongod = await MongoMemoryServer.create();
       const uri = mongod.getUri();
       await mongoose.connect(uri, { autoIndex: true });
+      console.log("In-memory MongoDB connected successfully.");
     } catch (memError) {
       console.error("In-memory MongoDB startup error:", memError.message);
       throw error;
