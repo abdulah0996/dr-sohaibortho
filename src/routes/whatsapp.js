@@ -6,12 +6,15 @@ const {
   extractWebhookMessages,
   updateDeliveryStatus,
   logIncomingMessage,
-  sendText
+  sendText,
+  sendReplyButtons,
+  sendInteractiveList,
+  markMessageAsRead
 } = require("../services/whatsappService");
-const { handleIncomingText } = require("../services/conversationService");
-const { ConversationSession, WhatsAppMessage } = require("../models");
+const { handleIncomingMessage } = require("../conversation/orchestrator");
+const { ConversationSession, WhatsAppMessage, Patient } = require("../models");
 const { requireAuth } = require("../middleware/auth");
-const { webhookLimiter } = require("../middleware/security");
+const { webhookLimiter, publicFormLimiter } = require("../middleware/security");
 const { asyncHandler } = require("../utils/asyncHandler");
 const { badRequest, forbidden, notFound } = require("../utils/errors");
 const { audit } = require("../services/auditService");
@@ -25,6 +28,7 @@ function validate(schema, body) {
   return parsed.data;
 }
 
+// Meta Webhook Verification
 router.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -35,48 +39,136 @@ router.get("/webhook", (req, res) => {
   return res.sendStatus(403);
 });
 
+// Meta Webhook Delivery & Incoming
 router.post("/webhook", webhookLimiter, asyncHandler(async (req, res) => {
   if (!verifyMetaSignature(req.rawBody, req.get("x-hub-signature-256"))) {
     throw forbidden("Invalid Meta webhook signature.");
   }
 
   const { messages, statuses } = extractWebhookMessages(req.body);
-  for (const status of statuses) await updateDeliveryStatus(status);
-
+  const pending = [];
+  for (const status of statuses) pending.push(updateDeliveryStatus(status));
   for (const message of messages) {
-    const logged = await logIncomingMessage({
-      metaMessageId: message.metaMessageId,
-      phoneE164: message.phoneE164,
-      body: message.body,
-      messageType: message.type,
-      payload: message.payload
-    });
-    if (logged.duplicate) continue;
-    if (message.body) {
-      const reply = await handleIncomingText({ phoneE164: message.phoneE164, text: message.body });
-      if (reply) await sendText(message.phoneE164, reply);
-    }
+    pending.push((async () => {
+      const logged = await logIncomingMessage({
+        metaMessageId: message.metaMessageId,
+        phoneE164: message.phoneE164,
+        body: message.body,
+        messageType: message.type,
+        payload: message.payload
+      });
+      if (logged.duplicate) return;
+      if (message.body) {
+        await markMessageAsRead(message.metaMessageId).catch(() => undefined);
+        const reply = await handleIncomingMessage({ phoneE164: message.phoneE164, text: message.body, replyId: message.replyId });
+        if (reply?.kind === "buttons") await sendReplyButtons(message.phoneE164, reply.body, reply.buttons);
+        else if (reply?.kind === "list") await sendInteractiveList(message.phoneE164, reply.body, reply.buttonText, reply.sections);
+        else if (reply?.body) await sendText(message.phoneE164, reply.body);
+      }
+    })().catch((error) => console.error("WhatsApp processing failed", { requestId: req.requestId, name: error.name })));
   }
-
   res.json({ success: true });
+  void Promise.allSettled(pending);
 }));
 
+// Simulate incoming WhatsApp message from patient interface
+router.post("/simulate-message", publicFormLimiter, asyncHandler(async (req, res) => {
+  const input = validate(z.object({
+    phone: z.string().min(7).max(40),
+    message: z.string().min(1).max(2000),
+    language: z.enum(["en", "ur"]).optional()
+  }), req.body);
+
+  const phoneE164 = normalizePhone(input.phone) || input.phone;
+  let session = await ConversationSession.findOne({ phoneE164 });
+
+  if (!session) {
+    let patient = await Patient.findOne({ phoneE164 });
+    session = await ConversationSession.create({
+      phoneE164,
+      patient: patient ? patient._id : null,
+      language: input.language || "en",
+      lastMessageAt: new Date()
+    });
+  }
+
+  // Save incoming message
+  const incomingMsg = await WhatsAppMessage.create({
+    phoneE164,
+    conversation: session._id,
+    direction: "incoming",
+    senderType: "patient",
+    body: input.message,
+    status: "received"
+  });
+
+  // Check if session is taken over by staff
+  if (session.aiPaused) {
+    session.lastMessageAt = new Date();
+    await session.save();
+    return res.json({
+      success: true,
+      humanTakeover: true,
+      incomingMessage: incomingMsg,
+      reply: { body: "Staff is currently assisting you." }
+    });
+  }
+
+  // Handle message through AI orchestrator
+  const reply = await handleIncomingMessage({
+    phoneE164,
+    text: input.message,
+    language: input.language || session.language
+  });
+
+  // Save AI outgoing message
+  const outgoingMsg = await WhatsAppMessage.create({
+    phoneE164,
+    conversation: session._id,
+    direction: "outgoing",
+    senderType: "ai",
+    body: reply?.body || reply?.text || "Thank you. Dr. Sohaib's assistant is processing your request.",
+    status: "delivered"
+  });
+
+  session.lastMessageAt = new Date();
+  await session.save();
+
+  res.json({
+    success: true,
+    incomingMessage: incomingMsg,
+    reply: {
+      body: outgoingMsg.body,
+      buttons: reply?.buttons,
+      sections: reply?.sections
+    }
+  });
+}));
+
+// Admin list conversations
 router.get("/conversations", requireAuth, asyncHandler(async (req, res) => {
   const conversations = await ConversationSession.find()
+    .populate("patient takenOverBy")
     .sort({ humanRequired: -1, lastMessageAt: -1 })
     .limit(200)
     .lean();
   res.json({ success: true, conversations });
 }));
 
+// Get messages for specific phone
 router.get("/conversations/:phone/messages", requireAuth, asyncHandler(async (req, res) => {
-  const phoneE164 = normalizePhone(req.params.phone);
-  const messages = await WhatsAppMessage.find({ phoneE164 }).sort({ createdAt: -1 }).limit(200).lean();
+  const phoneE164 = normalizePhone(req.params.phone) || req.params.phone;
+  const messages = await WhatsAppMessage.find({ phoneE164 })
+    .populate("senderStaff", "name role")
+    .sort({ createdAt: 1 })
+    .limit(200)
+    .lean();
   res.json({ success: true, messages });
 }));
 
+// Human takeover (Pause AI)
 router.post("/conversations/:phone/takeover", requireAuth, asyncHandler(async (req, res) => {
-  const phoneE164 = normalizePhone(req.params.phone);
+  const phoneE164 = normalizePhone(req.params.phone) || req.params.phone;
   const session = await ConversationSession.findOneAndUpdate(
     { phoneE164 },
     { $set: { aiPaused: true, humanRequired: true, takenOverBy: req.user._id } },
@@ -86,29 +178,49 @@ router.post("/conversations/:phone/takeover", requireAuth, asyncHandler(async (r
   res.json({ success: true, conversation: session });
 }));
 
-router.post("/conversations/:phone/release", requireAuth, asyncHandler(async (req, res) => {
-  const phoneE164 = normalizePhone(req.params.phone);
+// Reactivate AI
+router.post("/conversations/:phone/reactivate-ai", requireAuth, asyncHandler(async (req, res) => {
+  const phoneE164 = normalizePhone(req.params.phone) || req.params.phone;
   const session = await ConversationSession.findOne({ phoneE164 });
   if (!session) throw notFound("Conversation was not found.");
   session.aiPaused = false;
   session.humanRequired = false;
   session.takenOverBy = undefined;
   await session.save();
-  await audit({ actorType: "staff", actorStaff: req.user._id, action: "conversation.release", entityType: "conversation", entityId: session._id.toString(), req });
+  await audit({ actorType: "staff", actorStaff: req.user._id, action: "conversation.reactivate_ai", entityType: "conversation", entityId: session._id.toString(), req });
   res.json({ success: true, conversation: session });
 }));
 
+// Send staff message to patient
 router.post("/conversations/:phone/send", requireAuth, asyncHandler(async (req, res) => {
   const input = validate(z.object({ message: z.string().min(1).max(4000) }), req.body);
-  const phoneE164 = normalizePhone(req.params.phone);
-  const result = await sendText(phoneE164, input.message);
-  await audit({ actorType: "staff", actorStaff: req.user._id, action: "conversation.staff_message_sent", entityType: "conversation", entityId: phoneE164, req });
-  res.json({ success: true, result });
-}));
+  const phoneE164 = normalizePhone(req.params.phone) || req.params.phone;
+  
+  let session = await ConversationSession.findOne({ phoneE164 });
+  if (!session) {
+    session = await ConversationSession.create({
+      phoneE164,
+      aiPaused: true,
+      humanRequired: true,
+      takenOverBy: req.user._id
+    });
+  }
 
-router.get("/messages", requireAuth, asyncHandler(async (req, res) => {
-  const messages = await WhatsAppMessage.find().sort({ createdAt: -1 }).limit(300).lean();
-  res.json({ success: true, messages });
+  const outgoingMsg = await WhatsAppMessage.create({
+    phoneE164,
+    conversation: session._id,
+    direction: "outgoing",
+    senderType: "staff",
+    senderStaff: req.user._id,
+    body: input.message,
+    status: "delivered"
+  });
+
+  session.lastMessageAt = new Date();
+  await session.save();
+
+  await audit({ actorType: "staff", actorStaff: req.user._id, action: "conversation.staff_message_sent", entityType: "conversation", entityId: phoneE164, req });
+  res.json({ success: true, message: outgoingMsg });
 }));
 
 module.exports = router;

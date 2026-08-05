@@ -28,14 +28,26 @@ function safePublicAppointment(appointment) {
   return {
     appointmentId: appointment.appointmentId,
     tokenNumber: appointment.tokenNumber,
-    patientName: appointment.patientSnapshot.fullName,
-    phoneMasked: appointment.patientSnapshot.phoneMasked,
+    appointmentType: appointment.appointmentType || "in_person",
+    patientName: appointment.patientSnapshot?.fullName || "",
+    phoneMasked: appointment.patientSnapshot?.phoneMasked || maskPhone(appointment.phoneE164),
+    age: appointment.patientSnapshot?.age,
+    gender: appointment.patientSnapshot?.gender,
     date: appointment.date,
     time: appointment.time,
     status: appointment.status,
     reminderStatus: appointment.reminderStatus,
-    confirmationMessageStatus: appointment.confirmationMessageStatus,
-    clinicContactNumber: "+92 324 4754566"
+    clinic: appointment.locationSnapshot ? {
+      name: appointment.locationSnapshot.clinicName,
+      city: appointment.locationSnapshot.city,
+      address: appointment.locationSnapshot.address,
+      contactNumber: appointment.locationSnapshot.contactNumber
+    } : {
+      name: "Iqbal Hospital",
+      city: "Bahawalpur",
+      address: "Noor Mahal Road, Bahawalpur",
+      contactNumber: "+92 300 1234567"
+    }
   };
 }
 

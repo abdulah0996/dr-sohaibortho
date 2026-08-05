@@ -28,10 +28,10 @@ function createApp() {
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
-        scriptSrc: ["'self'"],
-        styleSrc: ["'self'", "https://fonts.googleapis.com"],
+        scriptSrc: ["'self'", "'unsafe-inline'"],
+        styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
         fontSrc: ["'self'", "https://fonts.gstatic.com"],
-        imgSrc: ["'self'", "data:"],
+        imgSrc: ["'self'", "data:", "blob:"],
         connectSrc: ["'self'"],
         objectSrc: ["'none'"],
         baseUri: ["'self'"],
@@ -44,28 +44,41 @@ function createApp() {
     origin(origin, callback) {
       if (!origin) return callback(null, true);
       if (config.corsOrigins.includes(origin)) return callback(null, true);
-      return callback(new Error("Origin is not allowed by CORS"));
+      return callback(null, true);
     },
     credentials: true
   }));
   app.use(express.json({
-    limit: "1mb",
+    limit: "10mb",
     verify: (req, res, buf) => {
       req.rawBody = buf;
     }
   }));
-  app.use(express.urlencoded({ extended: false, limit: "500kb" }));
+  app.use(express.urlencoded({ extended: false, limit: "10mb" }));
   app.use(cookieParser(config.cookieSecret));
   app.use(mongoSanitize());
   app.use(strictOrigin);
   app.use("/api", apiLimiter);
 
+  // Mount API Routes
   app.use("/api/auth", require("./routes/auth"));
   app.use("/api/appointments", require("./routes/appointments"));
   app.use("/api/availability", require("./routes/availability"));
   app.use("/api/whatsapp", require("./routes/whatsapp"));
   app.use("/api/settings", require("./routes/settings"));
+  app.use("/api/clinic-locations", require("./routes/locations"));
+  app.use("/api/clinics", require("./routes/locations"));
+  app.use("/api/doctors", require("./routes/doctors"));
   app.use("/api/health", require("./routes/health"));
+  app.use("/api/dashboard", require("./routes/dashboard"));
+  app.use("/api/reports", require("./routes/reports"));
+  app.use("/api/consultations", require("./routes/consultations"));
+  app.use("/api/online-consultations", require("./routes/consultations"));
+  app.use("/api/emergencies", require("./routes/emergencies"));
+  app.use("/api/emergency-alerts", require("./routes/emergencies"));
+  app.use("/api/conversations", require("./routes/conversations"));
+  app.use("/api/patients", require("./routes/patients"));
+  app.use("/api/reminders", require("./routes/reminders"));
 
   app.use(express.static(rootDir, {
     index: false,
@@ -74,8 +87,10 @@ function createApp() {
     }
   }));
 
-  app.get("/", (req, res) => res.sendFile(path.join(rootDir, "index.html")));
-  app.get(["/staff", "/appointments"], (req, res) => res.sendFile(path.join(rootDir, "index.html")));
+  app.get("*", (req, res, next) => {
+    if (req.path.startsWith("/api")) return next();
+    res.sendFile(path.join(rootDir, "index.html"));
+  });
 
   app.use("/api", notFoundHandler);
   app.use(errorHandler);

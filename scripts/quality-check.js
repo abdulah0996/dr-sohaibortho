@@ -1,12 +1,17 @@
 const { execFileSync } = require("node:child_process");
-const { readFileSync } = require("node:fs");
+const { readFileSync, readdirSync } = require("node:fs");
 const path = require("node:path");
 
 const root = path.resolve(__dirname, "..");
 const mode = process.argv[2];
-const trackedFiles = execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard"], { cwd: root, encoding: "utf8" })
-  .split(/\r?\n/)
-  .filter(Boolean);
+function walk(directory, relative = "") {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const next = path.join(relative, entry.name);
+    if (entry.isDirectory()) return ["node_modules", ".git", "production-dr-khurrum"].includes(entry.name) ? [] : walk(path.join(directory, entry.name), next);
+    return [next.replace(/\\/g, "/")];
+  });
+}
+const trackedFiles = walk(root).filter((file) => file !== ".env");
 
 function read(relativePath) {
   return readFileSync(path.join(root, relativePath), "utf8");
@@ -26,11 +31,11 @@ if (mode === "secrets") {
   if (findings.length) throw new Error(`Potential secret found in: ${findings.join(", ")}`);
   console.log("Secret scan passed for tracked project files.");
 } else if (mode === "dummy") {
-  const emailFiles = trackedFiles.filter((file) => /^src\/services\/(emailTransport|ownerAppointmentEmailService|ownerEmailOutboxService)\.js$/.test(file));
-  const forbidden = [/Ayesha Khan/, /NMC-250725-0010/, /owner@example\.com/, /localhost/i];
-  const findings = emailFiles.flatMap((file) => forbidden.some((pattern) => pattern.test(read(file))) ? [file] : []);
-  if (findings.length) throw new Error(`Dummy email content found in production code: ${findings.join(", ")}`);
-  console.log("Dummy-content scan passed for owner email production code.");
+  const productionFiles = trackedFiles.filter((file) => /^(src|script\.js|index\.html|api-client\.js)/.test(file));
+  const forbidden = [/Demo Mode/i, /Dummy Data/i, /Simulated success/i, /Frontend-only records/i, /No real record was changed/i, /Dr\. Khurr[au]m/i, /Nighat Medical Complex/i, /\bKHR-\d{4}/i];
+  const findings = productionFiles.flatMap((file) => forbidden.some((pattern) => pattern.test(read(file))) ? [file] : []);
+  if (findings.length) throw new Error(`Legacy or dummy content found in production code: ${findings.join(", ")}`);
+  console.log("Dummy and legacy identity scan passed for production code.");
 } else {
   throw new Error("Use quality-check.js with either secrets or dummy.");
 }

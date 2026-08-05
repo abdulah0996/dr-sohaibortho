@@ -12,11 +12,12 @@ const { sendOwnerAppointmentEmail } = require("./ownerAppointmentEmailService");
 const { audit } = require("./auditService");
 
 const NOTIFICATION_TYPE = "OWNER_NEW_APPOINTMENT_EMAIL";
-const RETRY_DELAYS_MS = [0, 60_000, 5 * 60_000, 15 * 60_000, 60 * 60_000];
+const RETRY_DELAYS_MS = [0, 60_000, 5 * 60_000]; // Max 3 attempts
 const LOCK_MS = 2 * 60_000;
-const MAX_ATTEMPTS = RETRY_DELAYS_MS.length;
+const MAX_ATTEMPTS = 3;
 let schedulerStarted = false;
 let scheduler;
+let disabledLogged = false;
 
 function safeFailureMessage(code) {
   return {
@@ -28,8 +29,15 @@ function safeFailureMessage(code) {
   }[code] || "Email delivery failed safely.";
 }
 
+function isEmailConfigured() {
+  const cfg = config.emailAppointmentAlert;
+  if (!cfg || !cfg.enabled) return false;
+  const smtp = cfg.smtp || {};
+  return Boolean(cfg.to && cfg.fromAddress && smtp.host && smtp.port && smtp.user && smtp.password);
+}
+
 async function enqueueOwnerAppointmentEmail(appointment, { session, requestId } = {}) {
-  if (!config.emailAppointmentAlert.enabled) return null;
+  if (!isEmailConfigured()) return null;
   const recipient = normalizeEmail(config.emailAppointmentAlert.to) || String(config.emailAppointmentAlert.to || "").trim();
   const options = { upsert: true, new: true, setDefaultsOnInsert: true };
   if (session) options.session = session;
@@ -54,6 +62,7 @@ async function enqueueOwnerAppointmentEmail(appointment, { session, requestId } 
 }
 
 async function claimNextJob({ outboxId, now = new Date() } = {}) {
+  if (!EmailNotificationOutbox) return null;
   const query = {
     $or: [
       { status: "queued", nextRetryAt: { $lte: now } },
@@ -104,7 +113,7 @@ async function markFailed(job, error, now = new Date()) {
     $unset: { lockedAt: "", lockExpiresAt: "" }
   };
   if (canRetry) {
-    update.$set.nextRetryAt = new Date(now.getTime() + RETRY_DELAYS_MS[attempts]);
+    update.$set.nextRetryAt = new Date(now.getTime() + RETRY_DELAYS_MS[attempts - 1]);
   } else {
     update.$unset.nextRetryAt = "";
   }
@@ -113,13 +122,14 @@ async function markFailed(job, error, now = new Date()) {
 }
 
 async function processOwnerEmailJobs({ limit = 10, outboxId, send = sendOwnerAppointmentEmail } = {}) {
+  if (!isEmailConfigured()) return [];
   const results = [];
   for (let index = 0; index < limit; index += 1) {
     const job = await claimNextJob({ outboxId });
     if (!job) break;
     try {
       const appointment = await Appointment.findById(job.appointmentId);
-      if (!appointment || !["scheduled", "rescheduled"].includes(appointment.status)) {
+      if (!appointment || !["scheduled", "rescheduled", "pending", "confirmed"].includes(appointment.status)) {
         throw new EmailDeliveryError("EMAIL_PERMANENT_FAILURE", false);
       }
       const result = await send({ appointment, outbox: job });
@@ -141,10 +151,10 @@ async function processOwnerEmailJobs({ limit = 10, outboxId, send = sendOwnerApp
 }
 
 function kickOwnerEmailWorker(outboxId) {
-  if (!outboxId) return;
+  if (!outboxId || !isEmailConfigured()) return;
   const immediate = setImmediate(() => {
     processOwnerEmailJobs({ limit: 1, outboxId }).catch((error) => {
-      console.warn("Owner email worker failed", { code: "EMAIL_WORKER_FAILURE", message: error.name });
+      console.warn("Owner email worker failed safely:", error.message || error);
     });
   });
   immediate.unref?.();
@@ -152,7 +162,7 @@ function kickOwnerEmailWorker(outboxId) {
 
 function publicOwnerEmailStatus(job) {
   if (!job) {
-    return config.emailAppointmentAlert.enabled
+    return isEmailConfigured()
       ? { status: "not_sent", label: "Not sent", canRetry: true }
       : { status: "not_configured", label: "Not configured", canRetry: false };
   }
@@ -165,6 +175,7 @@ async function attachOwnerEmailStatuses(appointments) {
   const values = Array.isArray(appointments) ? appointments : [appointments];
   const ids = values.filter(Boolean).map((appointment) => appointment._id);
   if (!ids.length) return appointments;
+  if (!EmailNotificationOutbox) return appointments;
   const jobs = await EmailNotificationOutbox.find({
     appointmentId: { $in: ids },
     notificationType: NOTIFICATION_TYPE
@@ -178,11 +189,11 @@ async function attachOwnerEmailStatuses(appointments) {
 }
 
 async function retryOwnerAppointmentEmail(appointmentId, options = {}) {
+  if (!isEmailConfigured()) {
+    throw new AppError(409, "EMAIL_FEATURE_DISABLED", "Email service is disabled because SMTP configuration is incomplete.");
+  }
   const appointment = await Appointment.findById(appointmentId);
   if (!appointment) throw new AppError(404, "NOT_FOUND", "Appointment was not found.");
-  if (!["scheduled", "rescheduled"].includes(appointment.status)) {
-    throw new AppError(409, "EMAIL_RETRY_NOT_AVAILABLE", "Owner email is available only for active appointments.");
-  }
 
   let job = await EmailNotificationOutbox.findOneAndUpdate(
     {
@@ -235,14 +246,24 @@ async function retryOwnerAppointmentEmail(appointmentId, options = {}) {
 function startOwnerEmailScheduler() {
   if (schedulerStarted) return;
   schedulerStarted = true;
+
+  if (!isEmailConfigured()) {
+    if (!disabledLogged) {
+      console.log("Email service is disabled because SMTP configuration is incomplete.");
+      disabledLogged = true;
+    }
+    return;
+  }
+
   scheduler = setInterval(() => {
     processOwnerEmailJobs().catch((error) => {
-      console.warn("Owner email scheduler failed", { code: "EMAIL_WORKER_FAILURE", message: error.name });
+      console.warn("Owner email scheduler failed safely:", error.message || error);
     });
-  }, 30_000);
+  }, 60_000);
   scheduler.unref?.();
+
   processOwnerEmailJobs().catch((error) => {
-    console.warn("Owner email recovery failed", { code: "EMAIL_WORKER_FAILURE", message: error.name });
+    console.warn("Owner email recovery failed safely:", error.message || error);
   });
 }
 
@@ -250,11 +271,13 @@ function stopOwnerEmailSchedulerForTests() {
   if (scheduler) clearInterval(scheduler);
   scheduler = undefined;
   schedulerStarted = false;
+  disabledLogged = false;
 }
 
 module.exports = {
   NOTIFICATION_TYPE,
   RETRY_DELAYS_MS,
+  isEmailConfigured,
   enqueueOwnerAppointmentEmail,
   processOwnerEmailJobs,
   attachOwnerEmailStatuses,

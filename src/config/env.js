@@ -49,11 +49,20 @@ function readOrigins() {
     .filter(Boolean);
 }
 
+const emailEnabled = readBoolean("EMAIL_ENABLED", readBoolean("EMAIL_APPOINTMENT_ALERT_ENABLED", false));
+const emailHost = read("EMAIL_HOST", read("SMTP_HOST")).trim();
+const emailPort = readNumber("EMAIL_PORT", readNumber("SMTP_PORT", 587));
+const emailUser = read("EMAIL_USER", read("SMTP_USER")).trim();
+const emailPassword = read("EMAIL_PASSWORD", read("SMTP_PASSWORD"));
+const emailFrom = read("EMAIL_FROM", read("EMAIL_FROM_ADDRESS")).trim();
+const ownerEmail = read("OWNER_EMAIL", read("EMAIL_APPOINTMENT_ALERT_TO")).trim();
+const emailSecure = readBoolean("EMAIL_SECURE", readBoolean("SMTP_SECURE", false));
+
 const config = {
   nodeEnv,
   isProduction,
   port: readNumber("PORT", 3000),
-  mongoUri: read("MONGODB_URI", "mongodb://127.0.0.1:27017/dr-khurram-chatbot"),
+  mongoUri: read("MONGODB_URI", "mongodb://127.0.0.1:27017/dr-sohaib-whatsapp-chatbot"),
   frontendUrl: read("FRONTEND_URL", "http://localhost:3000"),
   corsOrigins: readOrigins(),
   jwtAccessSecret: read("JWT_ACCESS_SECRET", "dev-only-change-this-access-secret"),
@@ -62,20 +71,22 @@ const config = {
   accessTokenTtl: read("ACCESS_TOKEN_TTL", "15m"),
   refreshTokenTtlDays: readNumber("REFRESH_TOKEN_TTL_DAYS", 30),
   clinicTimezone: read("CLINIC_TIMEZONE", "Asia/Karachi"),
-  clinicContactNumber: read("CLINIC_CONTACT_NUMBER", "+92 324 4754566"),
-  adminPanelUrl: read("ADMIN_PANEL_URL", "https://admin.nighatmedicalcomplex.com"),
+  clinicContactNumber: read("CLINIC_CONTACT_NUMBER", ""),
+  defaultClinicLocationCode: read("DEFAULT_CLINIC_LOCATION_CODE", "BWP"),
+  publicWhatsAppNumber: read("PUBLIC_WHATSAPP_NUMBER", ""),
+  adminPanelUrl: read("ADMIN_PANEL_URL", "http://localhost:3000/staff"),
   emailAppointmentAlert: {
-    enabled: readBoolean("EMAIL_APPOINTMENT_ALERT_ENABLED", false),
-    to: read("EMAIL_APPOINTMENT_ALERT_TO").trim(),
-    fromName: read("EMAIL_FROM_NAME", "Nighat Medical Complex").trim(),
-    fromAddress: read("EMAIL_FROM_ADDRESS").trim(),
+    enabled: emailEnabled,
+    to: ownerEmail,
+    fromName: read("EMAIL_FROM_NAME", "Dr. Sohaib Clinic").trim(),
+    fromAddress: emailFrom,
     provider: read("EMAIL_PROVIDER", "smtp").trim().toLowerCase(),
     smtp: {
-      host: read("SMTP_HOST").trim(),
-      port: readNumber("SMTP_PORT", 587),
-      secure: readBoolean("SMTP_SECURE", false),
-      user: read("SMTP_USER").trim(),
-      password: read("SMTP_PASSWORD")
+      host: emailHost,
+      port: emailPort,
+      secure: emailSecure,
+      user: emailUser,
+      password: emailPassword
     }
   },
   openaiApiKey: read("OPENAI_API_KEY"),

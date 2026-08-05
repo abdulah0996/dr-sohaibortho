@@ -9,7 +9,7 @@ let schedulerStarted = false;
 
 async function scheduleAppointmentReminders(appointment) {
   const settings = await getClinicSettings();
-  const appointmentAt = appointmentDateTime(appointment.date, appointment.time, settings.timezone);
+  const appointmentAt = appointmentDateTime(appointment.date, appointment.time, appointment.locationSnapshot?.timezone || settings.timezone);
   const now = new Date();
   const jobs = [];
 
@@ -75,8 +75,8 @@ async function processDueReminders() {
           appointment.appointmentId,
           appointment.date,
           appointment.time,
-          config.clinicContactNumber,
-          "Reply with your Appointment ID to reschedule or cancel."
+          appointment.locationSnapshot?.contactNumber || config.clinicContactNumber,
+          "Use Manage Appointment in WhatsApp to reschedule or cancel."
         ]
       );
 
@@ -86,7 +86,7 @@ async function processDueReminders() {
       await job.save();
 
       const remaining = await ReminderJob.countDocuments({ appointment: appointment._id, status: "pending" });
-      appointment.reminderStatus = remaining ? "partially_sent" : "sent";
+      appointment.reminderStatus = result.status === "sent_to_meta" ? (remaining ? "partially_sent" : "sent") : "pending";
       await appointment.save();
     } catch (error) {
       job.status = job.attempts >= 3 ? "failed" : "pending";

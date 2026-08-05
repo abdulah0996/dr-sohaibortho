@@ -10,7 +10,7 @@ async function getClinicSettings() {
       contactNumber: config.clinicContactNumber,
       timezone: config.clinicTimezone,
       weeklyHours: defaultWeeklyHours(),
-      slotDurationMinutes: 30,
+      slotDurationMinutes: 15,
       reminderIntervalsMinutes: [4320, 1440, 120]
     });
   }
@@ -41,9 +41,9 @@ async function getDoctorProfile() {
   if (!profile) {
     profile = await DoctorProfileSettings.create({
       key: "default",
-      doctorName: "Dr. Khurram",
+      doctorName: "Dr. Shoaib Aslam",
       contactNumber: config.clinicContactNumber,
-      profileImageUrl: "assets/dr-khurram-neutral-doctor.png"
+      profileImageUrl: ""
     });
   }
   return profile;

@@ -2,6 +2,7 @@ const mongoose = require("mongoose");
 const {
   Appointment,
   Counter,
+  ClinicLocation,
   Patient,
   PatientConsent,
   RescheduleHistory
@@ -9,16 +10,21 @@ const {
 const { badRequest, conflict, notFound } = require("../utils/errors");
 const { config } = require("../config/env");
 const { maskPhone, normalizePhone, safePublicAppointment } = require("../utils/security");
-const { normalizeTime, slotKey, activePatientDateKey } = require("../utils/time");
+const { normalizeTime, slotKey, activePatientDateKey, tokenNumberForTime } = require("../utils/time");
 const { ensureSlotBookable } = require("./availabilityService");
+const { getBookableLocation } = require("./locationService");
 const { audit } = require("./auditService");
-const {
-  enqueueOwnerAppointmentEmail,
-  attachOwnerEmailStatuses,
-  kickOwnerEmailWorker
-} = require("./ownerEmailOutboxService");
 
-const activeStatuses = ["scheduled", "rescheduled"];
+const activeStatuses = [
+  "pending",
+  "confirmed",
+  "patient_confirmed",
+  "arrived",
+  "in_consultation",
+  "rescheduled",
+  "waiting_for_earlier_slot",
+  "scheduled"
+];
 
 async function nextSequence(key) {
   const counter = await Counter.findOneAndUpdate(
@@ -29,15 +35,14 @@ async function nextSequence(key) {
   return counter.seq;
 }
 
-async function generateAppointmentId(date) {
+async function generateAppointmentId(location, date) {
   const year = String(date).slice(0, 4);
-  const seq = await nextSequence(`appointment:${year}`);
-  return `KHR-${year}-${String(seq).padStart(6, "0")}`;
+  const seq = await nextSequence(`appointment:${location.code}:${year}`);
+  return formatAppointmentId(location.code, year, seq);
 }
 
-async function generateTokenNumber(date) {
-  const seq = await nextSequence(`token:${date}`);
-  return String(seq).padStart(3, "0");
+function formatAppointmentId(locationCode, year, sequence) {
+  return `DS-${year}-${String(sequence).padStart(4, "0")}`;
 }
 
 async function findOrCreatePatient(input) {
@@ -65,49 +70,28 @@ async function createConsent({ patient, phoneE164, consentGiven, channel, langua
     consentGiven,
     channel,
     language: language || "en",
-    consentText: "Patient information will be used for appointment management, reminders, rescheduling, and cancellation support.",
+    consentText: "Patient information will be used for appointment management, reminders, rescheduling, and clinic communications for Dr. Sohaib.",
     consentedAt: new Date()
   });
 }
 
-async function sendAppointmentEventTemplate(appointment, templateName, kind) {
-  if (!templateName) return { status: "not_configured" };
-  const { sendTemplate } = require("./whatsappService");
-  const result = await sendTemplate(
-    appointment.phoneE164,
-    templateName,
-    "en",
-    [
-      appointment.patientSnapshot.fullName,
-      appointment.appointmentId,
-      appointment.tokenNumber,
-      appointment.date,
-      appointment.time,
-      config.clinicContactNumber
-    ]
-  );
-  if (kind === "confirmation") {
-    appointment.confirmationMessageStatus = result.status;
-    await appointment.save();
-  }
-  return result;
-}
-
 async function createAppointment(input, options = {}) {
-  const source = options.source || input.source || "website";
+  const source = options.source || input.source || "whatsapp";
   if (!input.consentGiven && source !== "staff") {
     throw badRequest("Patient consent is required before collecting appointment information.");
   }
 
   const time = normalizeTime(input.time);
   if (!time) throw badRequest("Use a valid appointment time.");
-  await ensureSlotBookable(input.date, time);
+  const location = await getBookableLocation(input.locationId || "BWP");
+  await ensureSlotBookable(location._id, input.date, time);
 
   const patient = await findOrCreatePatient(input);
   const phoneE164 = patient.phoneE164;
 
   const activeDuplicate = await Appointment.findOne({
     phoneE164,
+    location: location._id,
     date: input.date,
     status: { $in: activeStatuses }
   });
@@ -123,13 +107,15 @@ async function createAppointment(input, options = {}) {
     language: input.preferredLanguage || patient.preferredLanguage
   });
 
-  const appointmentId = await generateAppointmentId(input.date);
-  const tokenNumber = await generateTokenNumber(input.date);
+  const appointmentId = await generateAppointmentId(location, input.date);
+  const tokenNumber = tokenNumberForTime(location, input.date, time) || "001";
 
   try {
+    const apptType = input.appointmentType || "in_person";
     const appointmentData = {
       appointmentId,
       tokenNumber,
+      appointmentType: apptType,
       patient: patient._id,
       patientSnapshot: {
         fullName: input.fullName,
@@ -139,40 +125,45 @@ async function createAppointment(input, options = {}) {
         preferredLanguage: input.preferredLanguage || patient.preferredLanguage || "en"
       },
       phoneE164,
-      reason: input.reason,
-      optionalNote: input.optionalNote,
+      location: location._id,
+      locationSnapshot: { 
+        clinicName: location.clinicName, 
+        city: location.city, 
+        code: location.code, 
+        address: location.fullAddress, 
+        contactNumber: location.contactNumber, 
+        timezone: location.timezone 
+      },
+      reason: input.reason || "General Consultation",
+      optionalNote: input.optionalNote || "",
       date: input.date,
       time,
-      activeSlotKey: slotKey(input.date, time),
-      activePatientDateKey: activePatientDateKey(phoneE164, input.date),
+      status: "confirmed",
       consent: consent._id,
       source,
       createdBy: options.staffUser?._id
     };
-    let appointment;
-    let ownerEmailJob;
 
-    if (config.emailAppointmentAlert.enabled) {
-      await mongoose.connection.transaction(async (session) => {
-        [appointment] = await Appointment.create([appointmentData], { session });
-        ownerEmailJob = await enqueueOwnerAppointmentEmail(appointment, {
-          session,
-          requestId: options.req?.requestId
-        });
-      });
-    } else {
-      appointment = await Appointment.create(appointmentData);
+    const appointment = await Appointment.create(appointmentData);
+
+    // If Online Appointment, sync with OnlineConsultation record
+    if (String(apptType).toLowerCase() === "online") {
+      const { OnlineConsultation } = require("../models");
+      await OnlineConsultation.create({
+        consultationId: `VRT-${Date.now().toString().slice(-6)}`,
+        patient: patient._id,
+        fullName: input.fullName,
+        contactPhone: phoneE164,
+        symptoms: input.reason || "Virtual Online Consultation",
+        preferredDate: input.date,
+        preferredTime: time,
+        status: "Scheduled"
+      }).catch(() => {});
     }
 
     const { scheduleAppointmentReminders } = require("./reminderService");
     await scheduleAppointmentReminders(appointment);
-    if (!options.skipWhatsAppTemplate && source !== "whatsapp") {
-      await sendAppointmentEventTemplate(
-        appointment,
-        config.whatsapp.templates.appointmentConfirmation,
-        "confirmation"
-      );
-    }
+
     await audit({
       actorType: source === "staff" ? "staff" : "patient",
       actorStaff: options.staffUser?._id,
@@ -183,7 +174,6 @@ async function createAppointment(input, options = {}) {
       req: options.req
     });
 
-    kickOwnerEmailWorker(ownerEmailJob?._id);
     return appointment;
   } catch (error) {
     if (error.code === 11000) {
@@ -193,16 +183,46 @@ async function createAppointment(input, options = {}) {
   }
 }
 
-async function lookupAppointment({ appointmentId, phone }) {
-  const phoneE164 = normalizePhone(phone);
-  const appointment = await Appointment.findOne({ appointmentId, phoneE164 });
-  if (!appointment) throw notFound("Appointment was not found for the provided appointment ID and phone number.");
+async function lookupAppointment({ appointmentId, phone, reference, phoneNumber }) {
+  const refInput = reference || appointmentId || "";
+  const ref = String(refInput).trim().replace(/^#/, "");
+  const phoneInput = phone || phoneNumber || "";
+  if (!ref) throw badRequest("Appointment ID or Token Number is required.");
+
+  const normalizedPhoneE164 = normalizePhone(phoneInput);
+  const rawDigits = String(phoneInput || "").replace(/\D/g, "");
+  const last10Digits = rawDigits.length >= 10 ? rawDigits.slice(-10) : rawDigits;
+
+  const phoneQuery = {
+    $or: [
+      { phoneE164: normalizedPhoneE164 },
+      ...(last10Digits ? [{ phoneE164: { $regex: last10Digits, $options: "i" } }] : [])
+    ]
+  };
+
+  const refEscaped = ref.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const refRegex = new RegExp(`^${refEscaped}$`, "i");
+  const tokenRegex = new RegExp(`^#?${refEscaped}$`, "i");
+
+  const appointment = await Appointment.findOne({
+    $and: [
+      {
+        $or: [
+          { appointmentId: refRegex },
+          { tokenNumber: tokenRegex }
+        ]
+      },
+      phoneQuery
+    ]
+  }).populate("patient location");
+
+  if (!appointment) throw notFound("Appointment was not found for the provided details.");
   return appointment;
 }
 
 async function listAppointments(query = {}) {
   const filter = {};
-  if (query.status) filter.status = query.status;
+  if (query.status && query.status !== "all") filter.status = query.status;
   if (query.date) filter.date = query.date;
   if (query.from || query.to) {
     filter.date = {};
@@ -213,20 +233,20 @@ async function listAppointments(query = {}) {
     const phone = normalizePhone(query.search);
     filter.$or = [
       { appointmentId: new RegExp(query.search, "i") },
-      { "patientSnapshot.fullName": new RegExp(query.search, "i") }
+      { "patientSnapshot.fullName": new RegExp(query.search, "i") },
+      { tokenNumber: new RegExp(query.search, "i") }
     ];
     if (phone) filter.$or.push({ phoneE164: phone });
   }
 
   const limit = Math.min(Number(query.limit) || 100, 300);
-  const appointments = await Appointment.find(filter).sort({ date: 1, time: 1 }).limit(limit).lean();
-  return attachOwnerEmailStatuses(appointments);
+  return Appointment.find(filter).sort({ date: 1, time: 1 }).limit(limit).populate("patient location").lean();
 }
 
 async function getAppointmentById(id) {
-  const appointment = await Appointment.findById(id);
+  const appointment = await Appointment.findById(id).populate("patient location");
   if (!appointment) throw notFound("Appointment was not found.");
-  return attachOwnerEmailStatuses(appointment);
+  return appointment;
 }
 
 async function rescheduleAppointment({ appointmentId, phone, date, time, reason }, options = {}) {
@@ -234,18 +254,13 @@ async function rescheduleAppointment({ appointmentId, phone, date, time, reason 
     ? await Appointment.findOne({ appointmentId })
     : await lookupAppointment({ appointmentId, phone });
 
-  if (!activeStatuses.includes(appointment.status)) {
-    throw badRequest("Only active appointments can be rescheduled.");
-  }
+  if (!appointment) throw notFound("Appointment was not found.");
 
   const normalizedTime = normalizeTime(time);
   if (!normalizedTime) throw badRequest("Use a valid appointment time.");
 
-  if (appointment.date === date && appointment.time === normalizedTime) {
-    throw badRequest("The new appointment slot must be different from the current slot.");
-  }
-
-  await ensureSlotBookable(date, normalizedTime);
+  const location = await getBookableLocation(appointment.location);
+  await ensureSlotBookable(location._id, date, normalizedTime);
 
   const previousDate = appointment.date;
   const previousTime = appointment.time;
@@ -253,16 +268,10 @@ async function rescheduleAppointment({ appointmentId, phone, date, time, reason 
   appointment.date = date;
   appointment.time = normalizedTime;
   appointment.status = "rescheduled";
-  appointment.activeSlotKey = slotKey(date, normalizedTime);
-  appointment.activePatientDateKey = activePatientDateKey(appointment.phoneE164, date);
+  appointment.tokenNumber = tokenNumberForTime(location, date, normalizedTime) || "001";
   appointment.rescheduleCount += 1;
 
-  try {
-    await appointment.save();
-  } catch (error) {
-    if (error.code === 11000) throw conflict("The selected slot is no longer available.");
-    throw error;
-  }
+  await appointment.save();
 
   await RescheduleHistory.create({
     appointment: appointment._id,
@@ -272,12 +281,13 @@ async function rescheduleAppointment({ appointmentId, phone, date, time, reason 
     newTime: normalizedTime,
     changedByType: options.staffUser ? "staff" : "patient",
     changedByStaff: options.staffUser?._id,
-    reason
+    reason: reason || "Patient requested reschedule"
   });
 
   const { cancelAppointmentReminders, scheduleAppointmentReminders } = require("./reminderService");
   await cancelAppointmentReminders(appointment._id);
   await scheduleAppointmentReminders(appointment);
+
   await audit({
     actorType: options.staffUser ? "staff" : "patient",
     actorStaff: options.staffUser?._id,
@@ -289,14 +299,6 @@ async function rescheduleAppointment({ appointmentId, phone, date, time, reason 
     req: options.req
   });
 
-  if (!options.skipWhatsAppTemplate) {
-    await sendAppointmentEventTemplate(
-      appointment,
-      config.whatsapp.templates.rescheduleConfirmation,
-      "reschedule"
-    );
-  }
-
   return appointment;
 }
 
@@ -306,19 +308,15 @@ async function cancelAppointment({ appointmentId, phone, reason }, options = {})
     : await lookupAppointment({ appointmentId, phone });
 
   if (!appointment) throw notFound("Appointment was not found.");
-  if (!activeStatuses.includes(appointment.status)) {
-    throw badRequest("Only active appointments can be cancelled.");
-  }
 
   appointment.status = "cancelled";
-  appointment.activeSlotKey = undefined;
-  appointment.activePatientDateKey = undefined;
   appointment.cancelledAt = new Date();
   appointment.reminderStatus = "cancelled";
   await appointment.save();
 
   const { cancelAppointmentReminders } = require("./reminderService");
   await cancelAppointmentReminders(appointment._id);
+
   await audit({
     actorType: options.staffUser ? "staff" : "patient",
     actorStaff: options.staffUser?._id,
@@ -330,14 +328,6 @@ async function cancelAppointment({ appointmentId, phone, reason }, options = {})
     req: options.req
   });
 
-  if (!options.skipWhatsAppTemplate) {
-    await sendAppointmentEventTemplate(
-      appointment,
-      config.whatsapp.templates.cancellationConfirmation,
-      "cancellation"
-    );
-  }
-
   return appointment;
 }
 
@@ -346,18 +336,11 @@ async function updateAppointmentStatus(id, status, options = {}) {
   if (!appointment) throw notFound("Appointment was not found.");
 
   appointment.status = status;
-  if (!activeStatuses.includes(status)) {
-    appointment.activeSlotKey = undefined;
-    appointment.activePatientDateKey = undefined;
-  }
-  if (status === "visited") appointment.visitedAt = new Date();
-  if (status === "no_show") appointment.noShowAt = new Date();
+  if (status === "completed") appointment.completedAt = new Date();
+  if (status === "arrived") appointment.arrivedAt = new Date();
+  if (status === "cancelled") appointment.cancelledAt = new Date();
+  
   await appointment.save();
-
-  if (!activeStatuses.includes(status)) {
-    const { cancelAppointmentReminders } = require("./reminderService");
-    await cancelAppointmentReminders(appointment._id);
-  }
 
   await audit({
     actorType: "staff",
@@ -371,6 +354,14 @@ async function updateAppointmentStatus(id, status, options = {}) {
   return appointment;
 }
 
+async function requestEarlierSlot(appointmentId, phone, notes) {
+  const appointment = await lookupAppointment({ appointmentId, phone });
+  appointment.status = "waiting_for_earlier_slot";
+  if (notes) appointment.optionalNote = (appointment.optionalNote ? appointment.optionalNote + " | " : "") + "Earlier slot request: " + notes;
+  await appointment.save();
+  return appointment;
+}
+
 module.exports = {
   createAppointment,
   lookupAppointment,
@@ -379,5 +370,7 @@ module.exports = {
   rescheduleAppointment,
   cancelAppointment,
   updateAppointmentStatus,
+  requestEarlierSlot,
+  formatAppointmentId,
   safePublicAppointment
 };

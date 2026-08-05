@@ -11,11 +11,11 @@ function isWhatsAppConfigured() {
   return Boolean(config.whatsapp.accessToken && config.whatsapp.phoneNumberId);
 }
 
-function verifyMetaSignature(rawBody, signatureHeader) {
-  if (!config.whatsapp.metaAppSecret) return !config.isProduction;
+function verifyMetaSignature(rawBody, signatureHeader, secret = config.whatsapp.metaAppSecret) {
+  if (!secret) return !config.isProduction;
   if (!signatureHeader || !signatureHeader.startsWith("sha256=")) return false;
   const expected = crypto
-    .createHmac("sha256", config.whatsapp.metaAppSecret)
+    .createHmac("sha256", secret)
     .update(rawBody || Buffer.from(""))
     .digest("hex");
   const received = signatureHeader.slice("sha256=".length);
@@ -65,7 +65,8 @@ async function sendWhatsAppRequest(payload, to, bodyForLog) {
       Authorization: `Bearer ${config.whatsapp.accessToken}`,
       "Content-Type": "application/json"
     },
-    body: JSON.stringify(payload)
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(10000)
   });
 
   const data = await response.json().catch(() => ({}));
@@ -126,6 +127,26 @@ async function sendTemplate(to, templateName, languageCode, parameters = []) {
   };
   return sendWhatsAppRequest(payload, to, `Template: ${templateName}`);
 }
+
+async function sendReplyButtons(to, body, buttons) {
+  const payload = { messaging_product: "whatsapp", to: normalizePhone(to).replace("+", ""), type: "interactive",
+    interactive: { type: "button", body: { text: body }, action: { buttons: buttons.slice(0, 3).map((button) => ({ type: "reply", reply: { id: button.id, title: button.title.slice(0, 20) } })) } } };
+  return sendWhatsAppRequest(payload, to, body);
+}
+
+async function sendInteractiveList(to, body, buttonText, sections) {
+  const payload = { messaging_product: "whatsapp", to: normalizePhone(to).replace("+", ""), type: "interactive",
+    interactive: { type: "list", body: { text: body }, action: { button: buttonText.slice(0, 20), sections } } };
+  return sendWhatsAppRequest(payload, to, body);
+}
+
+async function markMessageAsRead(metaMessageId) {
+  if (!isWhatsAppConfigured() || !metaMessageId) return { status: "not_configured" };
+  const response = await fetch(graphUrl(`${config.whatsapp.phoneNumberId}/messages`), { method: "POST", headers: { Authorization: `Bearer ${config.whatsapp.accessToken}`, "Content-Type": "application/json" }, body: JSON.stringify({ messaging_product: "whatsapp", status: "read", message_id: metaMessageId }), signal: AbortSignal.timeout(10000) });
+  return { status: response.ok ? "read" : "failed" };
+}
+
+const sendStaffMessage = sendText;
 
 async function logIncomingMessage({ metaMessageId, phoneE164, body, messageType, payload }) {
   const session = await ConversationSession.findOneAndUpdate(
@@ -197,6 +218,9 @@ function extractWebhookMessages(body) {
         phoneE164: phone,
         type: message.type,
         body: text,
+        replyId: message.interactive?.button_reply?.id || message.interactive?.list_reply?.id || message.button?.payload || "",
+        replyTitle: message.interactive?.button_reply?.title || message.interactive?.list_reply?.title || message.button?.text || "",
+        mediaId: message.image?.id || message.document?.id || message.audio?.id || message.video?.id || message.sticker?.id || "",
         payload: message
       });
     }
@@ -209,7 +233,11 @@ module.exports = {
   isWhatsAppConfigured,
   verifyMetaSignature,
   sendText,
+  sendReplyButtons,
+  sendInteractiveList,
   sendTemplate,
+  markMessageAsRead,
+  sendStaffMessage,
   logIncomingMessage,
   updateDeliveryStatus,
   extractWebhookMessages

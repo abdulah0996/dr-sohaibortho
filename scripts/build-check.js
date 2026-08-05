@@ -1,6 +1,6 @@
-const { execFileSync } = require("node:child_process");
-const { readdirSync, statSync } = require("node:fs");
+const { readdirSync, statSync, readFileSync } = require("node:fs");
 const path = require("node:path");
+const vm = require("node:vm");
 
 const root = path.resolve(__dirname, "..");
 const roots = ["server.js", "script.js", "src", "tests", "scripts"];
@@ -13,6 +13,6 @@ function collect(relativePath) {
 
 const files = roots.flatMap(collect);
 for (const file of files) {
-  execFileSync(process.execPath, ["--check", file], { cwd: root, stdio: "pipe" });
+  new vm.Script(readFileSync(path.join(root, file), "utf8"), { filename: file });
 }
 console.log(`Syntax build check passed for ${files.length} JavaScript files.`);

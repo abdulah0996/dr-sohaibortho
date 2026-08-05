@@ -4,7 +4,7 @@ const { config } = require("../config/env");
 const { unauthorized, forbidden } = require("../utils/errors");
 const { asyncHandler } = require("../utils/asyncHandler");
 
-const refreshCookieName = "drkhurram_refresh";
+const refreshCookieName = "drshoaib_refresh";
 
 const requireAuth = asyncHandler(async (req, res, next) => {
   const header = req.get("authorization") || "";

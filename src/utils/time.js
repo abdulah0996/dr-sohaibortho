@@ -6,13 +6,13 @@ const TIME_RE = /^\d{2}:\d{2}$/;
 
 function defaultWeeklyHours() {
   return [
-    { day: 1, isOpen: true, start: "09:00", end: "16:00" },
-    { day: 2, isOpen: true, start: "09:00", end: "16:00" },
-    { day: 3, isOpen: true, start: "09:00", end: "16:00" },
-    { day: 4, isOpen: true, start: "09:00", end: "16:00" },
-    { day: 5, isOpen: true, start: "09:00", end: "16:00" },
-    { day: 6, isOpen: false, start: "09:00", end: "16:00" },
-    { day: 7, isOpen: false, start: "09:00", end: "16:00" }
+    { day: 1, isOpen: true, start: "16:30", end: "20:30" },
+    { day: 2, isOpen: true, start: "16:30", end: "20:30" },
+    { day: 3, isOpen: true, start: "16:30", end: "20:30" },
+    { day: 4, isOpen: true, start: "16:30", end: "20:30" },
+    { day: 5, isOpen: false, start: "16:30", end: "20:30" },
+    { day: 6, isOpen: false, start: "16:30", end: "20:30" },
+    { day: 7, isOpen: false, start: "16:30", end: "20:30" }
   ];
 }
 
@@ -134,14 +134,14 @@ function validateSlotAgainstSchedule({ settings, date, time, now = nowInClinicZo
 
   const daySchedule = getDaySchedule(settings, date);
   if (!daySchedule || !daySchedule.isOpen) {
-    return { ok: false, reason: "Dr. Khurram is available Monday to Friday from 9:00 AM to 4:00 PM. The clinic is closed on Saturday and Sunday." };
+    return { ok: false, reason: "The selected clinic is closed on that date." };
   }
 
   const selected = minutesFromTime(time);
   const start = minutesFromTime(daySchedule.start);
   const end = minutesFromTime(daySchedule.end);
   if (selected < start || selected > end) {
-    return { ok: false, reason: "Appointments are available only from 9:00 AM to 4:00 PM." };
+    return { ok: false, reason: "The selected time is outside this clinic's opening hours." };
   }
 
   return { ok: true };
@@ -163,12 +163,23 @@ function generateScheduleSlots(settings, date) {
   return slots;
 }
 
-function slotKey(date, time) {
-  return `${date}|${time}`;
+function slotKey(locationId, date, time) {
+  if (time === undefined) return `default|${locationId}|${date}`;
+  return `${locationId}|${date}|${time}`;
 }
 
-function activePatientDateKey(phoneE164, date) {
-  return `${phoneE164}|${date}`;
+function activePatientDateKey(phoneE164, locationId, date) {
+  if (date === undefined) return `${phoneE164}|default|${locationId}`;
+  return `${phoneE164}|${locationId}|${date}`;
+}
+
+function tokenNumberForTime(locationSettings, date, time) {
+  const schedule = getDaySchedule(locationSettings, date);
+  if (!schedule || !schedule.isOpen) return "";
+  const duration = Number(locationSettings.slotDurationMinutes || 15);
+  const offset = minutesFromTime(time) - minutesFromTime(schedule.start);
+  if (offset < 0 || offset % duration !== 0) return "";
+  return String((offset / duration) + 1).padStart(3, "0");
 }
 
 module.exports = {
@@ -184,5 +195,6 @@ module.exports = {
   validateSlotAgainstSchedule,
   generateScheduleSlots,
   slotKey,
-  activePatientDateKey
+  activePatientDateKey,
+  tokenNumberForTime
 };

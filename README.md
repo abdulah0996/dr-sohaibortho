@@ -1,198 +1,34 @@
-# Dr. Khurram Healthcare WhatsApp AI Appointment Chatbot
+# Dr. Sohaib WhatsApp AI Chatbot & Appointment System
 
-Production-oriented Node.js, Express, MongoDB, Vanilla JS, and Meta WhatsApp Cloud API appointment system for Dr. Khurram.
+Production-oriented Node.js, Express, MongoDB and Meta WhatsApp Cloud API appointment system for Dr. Sohaib, Specialist Physician & Surgeon. The root web interface uses the same appointment APIs as WhatsApp; clinic availability is controlled by database-backed locations.
 
-The system includes:
+## Local setup
 
-- Public website with appointment booking, lookup, rescheduling, cancellation, token card, privacy, emergency guidance, and WhatsApp entry point.
-- Secure staff panel with first Super Admin setup, login, appointments, manual entry, WhatsApp conversations, staff takeover, settings, users, and audit logs.
-- MongoDB schemas for staff, patients, appointments, consent, opt-out, conversations, WhatsApp messages, delivery statuses, settings, blocked dates/slots, reminders, notifications, audit logs, and refresh sessions.
-- Official Meta WhatsApp Cloud API webhook verification, signature verification, message deduplication, delivery status logging, and sender services.
-- OpenAI-powered intent/language classification with deterministic fallback logic.
-- Clinic schedule enforcement: Monday-Friday, 9:00 AM to 4:00 PM, Saturday/Sunday closed, no past or expired slots.
+Requirements: Node.js 18+, npm, and MongoDB.
 
-## Folder Hierarchy
-
-```text
-.
-├── index.html
-├── style.css
-├── script.js
-├── assets/
-├── server.js
-├── src/
-│   ├── app.js
-│   ├── config/
-│   ├── middleware/
-│   ├── models/
-│   ├── routes/
-│   ├── services/
-│   └── utils/
-├── tests/
-├── Dockerfile
-├── docker-compose.yml
-├── .env.example
-└── package.json
-```
-
-## Local Setup
-
-1. Install dependencies:
-
-```bash
+```powershell
+Copy-Item .env.example .env
 npm install
-```
-
-2. Copy environment file:
-
-```bash
-cp .env.example .env
-```
-
-3. Start MongoDB locally or with Docker:
-
-```bash
-docker compose up -d mongo
-```
-
-4. Start the app:
-
-```bash
-npm run dev
-```
-
-5. Open:
-
-```text
-http://localhost:3000
-```
-
-## Required Environment Variables
-
-Set all production values before deployment:
-
-```text
-MONGODB_URI
-JWT_ACCESS_SECRET
-JWT_REFRESH_SECRET
-COOKIE_SECRET
-FRONTEND_URL
-CORS_ORIGINS
-OPENAI_API_KEY
-WHATSAPP_ACCESS_TOKEN
-WHATSAPP_PHONE_NUMBER_ID
-WHATSAPP_BUSINESS_ACCOUNT_ID
-WHATSAPP_VERIFY_TOKEN
-META_APP_SECRET
-WHATSAPP_TEMPLATE_APPOINTMENT_CONFIRMATION
-WHATSAPP_TEMPLATE_APPOINTMENT_REMINDER
-WHATSAPP_TEMPLATE_RESCHEDULE_CONFIRMATION
-WHATSAPP_TEMPLATE_CANCELLATION_CONFIRMATION
-```
-
-Never place these values in `index.html`, `style.css`, or `script.js`.
-
-## Staff Setup
-
-There is no public staff registration and no hardcoded staff account.
-
-1. Open the Staff Panel.
-2. If no staff users exist, complete First Super Admin Setup.
-3. Sign in with that Super Admin account.
-4. Create additional staff users from the Users tab.
-
-Password rules require at least 12 characters with uppercase, lowercase, number, and symbol.
-
-## Meta WhatsApp Cloud API Configuration
-
-1. Create or use a Meta app with WhatsApp product enabled.
-2. Add the clinic WhatsApp Business phone number.
-3. Copy the phone number ID, business account ID, access token, and app secret into `.env`.
-4. Set a strong `WHATSAPP_VERIFY_TOKEN`.
-5. Configure webhook callback URL:
-
-```text
-https://your-domain.com/api/whatsapp/webhook
-```
-
-6. Subscribe to WhatsApp message and message status webhook fields.
-7. Create and approve utility templates for confirmation, reminders, reschedule confirmation, and cancellation confirmation.
-8. Put approved template names into the matching environment variables.
-
-The backend verifies `X-Hub-Signature-256`, deduplicates incoming Meta message IDs, logs delivery/read/failed statuses, and sends free-form text only inside active conversations. Reminder jobs use template messages.
-
-## OpenAI Configuration
-
-Set `OPENAI_API_KEY` and optionally `OPENAI_MODEL`. If OpenAI is not configured, the system still uses deterministic intent and language fallback handling for core appointment flows.
-
-The assistant is constrained to appointment management, clinic information, safe emergency guidance, and staff escalation. It does not diagnose, prescribe, or replace a doctor.
-
-## Owner Appointment Email Alerts
-
-New confirmed appointments can queue one durable owner notification after the appointment and outbox record commit in the same MongoDB transaction. The worker sends through SMTP, uses an expiring lock to recover interrupted work, and retries temporary failures after 1 minute, 5 minutes, 15 minutes, and 1 hour. Email failure never changes the appointment.
-
-The feature is disabled by default. Configure these values privately in the hosting environment:
-
-```text
-EMAIL_APPOINTMENT_ALERT_ENABLED=true
-EMAIL_APPOINTMENT_ALERT_TO
-EMAIL_FROM_NAME
-EMAIL_FROM_ADDRESS
-EMAIL_PROVIDER=smtp
-SMTP_HOST
-SMTP_PORT
-SMTP_SECURE
-SMTP_USER
-SMTP_PASSWORD
-ADMIN_PANEL_URL
-```
-
-Do not commit real addresses or SMTP credentials. The MongoDB deployment must support transactions; the included Docker Compose MongoDB service runs as a single-node replica set for local development.
-
-## Appointment Rules
-
-- Open Monday-Friday only.
-- Closed Saturday and Sunday.
-- Slots before 09:00 and after 16:00 are rejected.
-- Past dates and expired time slots are rejected.
-- Active appointments cannot share the same date/time.
-- A patient cannot hold duplicate active appointments on the same date.
-- Lookup requires appointment ID and phone number.
-- Cancellation preserves records and releases slots.
-- Rescheduling saves previous date/time history.
-
-## Deployment
-
-Use a production MongoDB deployment, HTTPS, a stable public domain, and environment variables managed by the hosting provider.
-
-```bash
-npm install --omit=dev --no-audit --no-fund
+npm test
+npm run seed
 npm start
 ```
 
-Health endpoints:
+Open `http://localhost:3000`. The health endpoint is `http://localhost:3000/api/health`.
 
-```text
-GET /api/health
-GET /api/health/ready
-```
+## Configuration
 
-Production checklist:
+Fill required production values in `.env`. Important variables are `MONGODB_URI`, `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`, `COOKIE_SECRET`, `FRONTEND_URL`, `CORS_ORIGINS`, `CLINIC_TIMEZONE`, `CLINIC_CONTACT_NUMBER`, `DEFAULT_CLINIC_LOCATION_CODE`, `PUBLIC_WHATSAPP_NUMBER`, `ADMIN_PANEL_URL`, `WHATSAPP_GRAPH_VERSION`, `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_BUSINESS_ACCOUNT_ID`, `WHATSAPP_VERIFY_TOKEN`, `META_APP_SECRET`, and optional `OPENAI_API_KEY`.
 
-- Replace all `.env.example` values.
-- Use HTTPS only.
-- Set exact `CORS_ORIGINS`.
-- Ensure MongoDB indexes are created.
-- Configure approved WhatsApp templates.
-- Verify webhook challenge and signature validation.
-- Test booking, lookup, reschedule, cancellation, reminders, staff takeover, and logout.
-- Confirm doctor specialty, qualifications, experience, biography, and address before publishing those details.
-- Review audit logs after sensitive staff actions.
+## Active Clinic & Schedule
 
-## Tests
+Initial data: Iqbal Hospital, Noor Mahal Road, Bahawalpur (`BWP`) is bookable Monday–Thursday, 4:30–8:30 PM in 15-minute slots. Bahawalnagar and Rahim Yar Khan are marked as Coming Soon and cannot be booked.
 
-```bash
-npm test
-```
+Appointment IDs use `DS-{YEAR}-{SEQUENCE}`. Tokens are derived from time order within the location schedule.
 
-Current tests cover clinic slot validation for weekdays, weekends, out-of-hours slots, and past slots.
+## Demo Users
+
+- Super Admin: `admin@drsohaibdemo.com` / `Admin@123`
+- Doctor: `doctor@drsohaibdemo.com` / `Doctor@123`
+- Receptionist: `reception@drsohaibdemo.com` / `Reception@123`
+- Clinic Staff: `staff@drsohaibdemo.com` / `Staff@123`

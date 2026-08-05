@@ -28,8 +28,8 @@ function validate(schema, body) {
 const staffSchema = z.object({
   name: z.string().min(2).max(120),
   email: z.string().email().max(200),
-  password: z.string().min(12).max(200),
-  role: z.enum(["super_admin", "admin", "receptionist"]).optional()
+  password: z.string().min(8).max(200),
+  role: z.enum(["super_admin", "doctor", "receptionist", "clinic_staff"]).optional()
 });
 
 router.get("/setup-status", asyncHandler(async (req, res) => {
@@ -81,7 +81,7 @@ router.post("/users", requireAuth, requireRole("super_admin"), asyncHandler(asyn
 router.patch("/users/:id", requireAuth, requireRole("super_admin"), asyncHandler(async (req, res) => {
   const input = validate(z.object({
     name: z.string().min(2).max(120).optional(),
-    role: z.enum(["super_admin", "admin", "receptionist"]).optional(),
+    role: z.enum(["super_admin", "doctor", "receptionist", "clinic_staff"]).optional(),
     isActive: z.boolean().optional()
   }), req.body);
   const user = await updateStaffUser(req.params.id, input);

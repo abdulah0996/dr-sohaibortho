@@ -9,7 +9,7 @@ services:
     env_file:
       - .env
     environment:
-      MONGODB_URI: mongodb://mongo:27017/dr-khurram-chatbot?replicaSet=rs0&directConnection=true
+      MONGODB_URI: mongodb://mongo:27017/dr-shoaib-whatsapp-chatbot?replicaSet=rs0&directConnection=true
     restart: unless-stopped
 
   mongo:
