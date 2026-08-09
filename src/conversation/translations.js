@@ -10,7 +10,7 @@ const copy = {
     date: "Select an available appointment date (Monday to Thursday).",
     time: "Select an available time slot (4:30 PM to 8:30 PM).",
     noAppointment: "No active upcoming appointment was found for this WhatsApp number.",
-    staff: "Your message has been sent to Dr. Sohaib's clinic staff. Automated AI responses are now paused.",
+    staff: "Your message has been sent to Dr. Sohaib's clinic staff. Automated responses are now paused.",
     emergency: "EMERGENCY NOTICE: If this is a life-threatening medical emergency, please visit the nearest Emergency Room or call emergency services immediately. An alert has also been raised for Dr. Sohaib's team.",
     error: "We could not complete that request. Please try again or speak to clinic staff."
   },

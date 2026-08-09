@@ -1,4 +1,10 @@
 const mongoose = require("mongoose");
+const {
+  WHATSAPP_MESSAGE_STATUSES,
+  WHATSAPP_DELIVERY_STATUSES,
+  REMINDER_DELIVERY_STATUSES
+} = require("../domain/whatsappRules");
+const { isValidTimeWindow, isValidTimezone, isValidWeeklyHours } = require("../domain/scheduleRules");
 
 const { Schema } = mongoose;
 
@@ -62,49 +68,100 @@ const patientConsentSchema = new Schema({
   phoneE164: { type: String, required: true, index: true },
   consentGiven: { type: Boolean, required: true },
   consentText: { type: String, required: true },
+  consentTextVersion: { type: String, required: true, trim: true, maxlength: 80 },
   channel: { type: String, enum: ["website", "whatsapp", "staff"], required: true },
   language: { type: String, default: "en" },
   consentedAt: { type: Date, default: Date.now }
 }, baseOptions);
 
-// Clinic Location schema (Clinic)
+const weeklyHourSchema = new Schema({
+  day: { type: Number, required: true, min: 1, max: 7 },
+  isOpen: { type: Boolean, required: true, default: false },
+  start: { type: String, required: true, match: /^\d{2}:\d{2}$/ },
+  end: { type: String, required: true, match: /^\d{2}:\d{2}$/ }
+}, { _id: false });
+
+const blockedDateSchema = new Schema({
+  date: { type: String, required: true, match: /^\d{4}-\d{2}-\d{2}$/ },
+  reason: { type: String, required: true, trim: true, maxlength: 500 },
+  createdBy: { type: Schema.Types.ObjectId, ref: "StaffUser" },
+  createdAt: { type: Date, required: true, default: Date.now }
+}, { _id: false });
+
+const blockedSlotSchema = new Schema({
+  date: { type: String, required: true, match: /^\d{4}-\d{2}-\d{2}$/ },
+  time: { type: String, required: true, match: /^\d{2}:\d{2}$/ },
+  reason: { type: String, required: true, trim: true, maxlength: 500 },
+  createdBy: { type: Schema.Types.ObjectId, ref: "StaffUser" },
+  createdAt: { type: Date, required: true, default: Date.now }
+}, { _id: false });
+
+function defaultLocationWeeklyHours() {
+  return [1, 2, 3, 4, 5, 6, 7].map((day) => ({
+    day,
+    isOpen: day <= 4,
+    start: "16:30",
+    end: "20:30"
+  }));
+}
+
+// Authoritative clinic schedule and availability schema.
 const clinicLocationSchema = new Schema({
   clinicName: { type: String, required: true, trim: true, maxlength: 160 },
   city: { type: String, required: true, trim: true, maxlength: 100 },
   code: { type: String, required: true, unique: true, uppercase: true, trim: true },
   fullAddress: { type: String, required: true, trim: true, maxlength: 500 },
   contactNumber: { type: String, trim: true, maxlength: 50 },
-  status: { type: String, enum: ["Active", "Coming Soon"], default: "Active" },
-  isActive: { type: Boolean, default: true, index: true },
-  bookingEnabled: { type: Boolean, default: true, index: true },
-  timezone: { type: String, default: "Asia/Karachi" },
-  weeklyHours: [{
-    day: { type: Number, min: 1, max: 7 },
-    isOpen: { type: Boolean, default: true },
-    start: { type: String, default: "16:30" },
-    end: { type: String, default: "20:30" }
-  }],
+  status: { type: String, enum: ["Active", "Inactive", "Coming Soon"], default: "Active", index: true },
+  timezone: { type: String, default: "Asia/Karachi", validate: { validator: isValidTimezone, message: "Invalid clinic timezone" } },
+  weeklyHours: {
+    type: [weeklyHourSchema],
+    default: defaultLocationWeeklyHours,
+    validate: {
+      validator(hours) {
+        if (!Array.isArray(hours) || hours.length !== 7 || new Set(hours.map((entry) => entry.day)).size !== 7) return false;
+        return hours.every((entry) => isValidTimeWindow(entry.start, entry.end));
+      },
+      message: "Weekly hours must contain seven unique days with valid opening and closing times"
+    }
+  },
   slotDurationMinutes: { type: Number, default: 15, min: 5, max: 240 },
+  sameDayBookingCutoffMinutes: { type: Number, default: 0, min: 0, max: 1440 },
   appointmentFee: { type: Number, min: 0, default: 2000 },
-  blockedDates: [{ date: String, reason: String }],
+  blockedDates: {
+    type: [blockedDateSchema],
+    default: [],
+    validate: { validator: (entries) => new Set(entries.map((entry) => entry.date)).size === entries.length, message: "Blocked dates must be unique" }
+  },
+  blockedSlots: {
+    type: [blockedSlotSchema],
+    default: [],
+    validate: { validator: (entries) => new Set(entries.map((entry) => `${entry.date}|${entry.time}`)).size === entries.length, message: "Blocked slots must be unique" }
+  },
   displayOrder: { type: Number, default: 0 }
 }, baseOptions);
 
-clinicLocationSchema.index({ isActive: 1, bookingEnabled: 1, displayOrder: 1 });
+clinicLocationSchema.index({ status: 1, displayOrder: 1 });
+clinicLocationSchema.pre("validate", function validateSchedule(next) {
+  if (!isValidWeeklyHours(this.weeklyHours, this.slotDurationMinutes)) {
+    this.invalidate("weeklyHours", "Weekly time windows must divide evenly into the configured slot duration");
+  }
+  next();
+});
 
 // Doctor Profile Schema (Doctor)
 const doctorProfileSchema = new Schema({
   doctorKey: { type: String, default: "dr-sohaib", unique: true },
-  doctorName: { type: String, default: "Dr. Sohaib" },
-  profileImage: { type: String, default: "/assets/dr-sohaib.png" },
-  qualification: { type: String, default: "Specialist Physician & Surgeon" },
-  specialty: { type: String, default: "General & Specialty Clinical Consultation, Surgical Evaluation & Patient Care" },
-  experience: { type: String, default: "12+ Years Clinical Experience" },
-  services: { type: String, default: "Professional Consultations, Surgical Evaluations, Comprehensive Diagnosis & Follow-up Care" },
-  consultationLocation: { type: String, default: "Iqbal Hospital, Noor Mahal Road, Bahawalpur" },
-  consultationDays: { type: String, default: "Monday to Thursday" },
-  consultationTimings: { type: String, default: "4:30 PM to 8:30 PM" },
-  bio: { type: String, default: "Dr. Sohaib is a dedicated physician and surgeon based at Iqbal Hospital, Bahawalpur. He provides professional consultations, surgical evaluations, and follow-up care for patients." }
+  doctorName: { type: String, default: "" },
+  profileImage: { type: String, default: "" },
+  qualification: { type: String, default: "" },
+  specialty: { type: String, default: "" },
+  experience: { type: String, default: "" },
+  services: { type: String, default: "" },
+  consultationLocation: { type: String, default: "" },
+  consultationDays: { type: String, default: "" },
+  consultationTimings: { type: String, default: "" },
+  bio: { type: String, default: "" }
 }, baseOptions);
 
 // Appointment schema
@@ -134,10 +191,15 @@ const appointmentSchema = new Schema({
   optionalNote: { type: String, maxlength: 1000 },
   date: { type: String, required: true, match: /^\d{4}-\d{2}-\d{2}$/ },
   time: { type: String, required: true, match: /^\d{2}:\d{2}$/ },
+  slotTimezone: { type: String, default: "Asia/Karachi" },
+  activeSlotKey: { type: String },
+  idempotencyKey: { type: String, maxlength: 300 },
+  idempotencyFingerprint: { type: String, maxlength: 64 },
   status: {
     type: String,
     enum: [
       "pending",
+      "scheduled",
       "confirmed",
       "patient_confirmed",
       "arrived",
@@ -153,24 +215,53 @@ const appointmentSchema = new Schema({
   },
   consent: { type: Schema.Types.ObjectId, ref: "PatientConsent" },
   source: { type: String, enum: ["website", "whatsapp", "staff"], default: "whatsapp" },
-  reminderStatus: { type: String, enum: ["pending", "partially_sent", "sent", "cancelled"], default: "pending" },
+  reminderStatus: { type: String, enum: ["not_scheduled", "pending", "partially_sent", "sent", "failed", "cancelled"], default: "pending" },
   rescheduleCount: { type: Number, default: 0 },
   createdBy: { type: Schema.Types.ObjectId, ref: "StaffUser" },
   cancelledAt: { type: Date },
+  cancellationReason: { type: String, maxlength: 1000 },
+  cancellationSource: { type: String, enum: ["website", "whatsapp", "staff", "system"] },
+  cancelledBy: { type: Schema.Types.ObjectId, ref: "StaffUser" },
   completedAt: { type: Date },
-  arrivedAt: { type: Date }
+  arrivedAt: { type: Date },
+  rescheduleHistory: [{
+    previousLocation: { type: Schema.Types.ObjectId, ref: "ClinicLocation" },
+    previousDate: String,
+    previousTime: String,
+    newLocation: { type: Schema.Types.ObjectId, ref: "ClinicLocation" },
+    newDate: String,
+    newTime: String,
+    changedByType: { type: String, enum: ["patient", "staff", "system"] },
+    changedByStaff: { type: Schema.Types.ObjectId, ref: "StaffUser" },
+    reason: { type: String, maxlength: 1000 },
+    changedAt: { type: Date, default: Date.now }
+  }]
 }, baseOptions);
+
+const bookingRequestSchema = new Schema({
+  key: { type: String, required: true, maxlength: 300 },
+  fingerprint: { type: String, required: true, maxlength: 64 },
+  status: { type: String, enum: ["processing", "completed", "failed"], default: "processing", index: true },
+  appointment: { type: Schema.Types.ObjectId, ref: "Appointment" },
+  leaseExpiresAt: { type: Date, required: true },
+  errorCode: { type: String, maxlength: 80 }
+}, baseOptions);
+bookingRequestSchema.index({ key: 1 }, { unique: true, name: "uniq_booking_request_key" });
 
 appointmentSchema.index({ location: 1, date: 1, time: 1, status: 1 });
 appointmentSchema.index({ appointmentId: 1, phoneE164: 1 });
+appointmentSchema.index({ activeSlotKey: 1 }, { unique: true, sparse: true, name: "uniq_active_appointment_slot" });
+appointmentSchema.index({ idempotencyKey: 1 }, { unique: true, sparse: true, name: "uniq_appointment_idempotency" });
 
 // Reschedule History schema
 const rescheduleHistorySchema = new Schema({
   appointment: { type: Schema.Types.ObjectId, ref: "Appointment", required: true, index: true },
   previousDate: { type: String, required: true },
   previousTime: { type: String, required: true },
+  previousLocation: { type: Schema.Types.ObjectId, ref: "ClinicLocation" },
   newDate: { type: String, required: true },
   newTime: { type: String, required: true },
+  newLocation: { type: Schema.Types.ObjectId, ref: "ClinicLocation" },
   changedByType: { type: String, enum: ["patient", "staff", "system"], required: true },
   changedByStaff: { type: Schema.Types.ObjectId, ref: "StaffUser" },
   reason: { type: String, maxlength: 1000 }
@@ -187,7 +278,8 @@ const conversationSessionSchema = new Schema({
   humanRequired: { type: Boolean, default: false },
   aiPaused: { type: Boolean, default: false },
   takenOverBy: { type: Schema.Types.ObjectId, ref: "StaffUser" },
-  lastMessageAt: { type: Date, default: Date.now }
+  lastMessageAt: { type: Date, default: Date.now },
+  serviceWindowExpiresAt: { type: Date }
 }, baseOptions);
 
 conversationSessionSchema.index({ humanRequired: 1, aiPaused: 1, lastMessageAt: -1 });
@@ -205,26 +297,53 @@ const whatsappMessageSchema = new Schema({
   mediaUrl: { type: String },
   status: {
     type: String,
-    enum: ["received", "queued", "sent", "delivered", "read", "failed"],
+    enum: WHATSAPP_MESSAGE_STATUSES,
     default: "received",
     index: true
-  }
+  },
+  error: { type: String, maxlength: 500 },
+  failureCode: { type: String, maxlength: 100 },
+  failureReason: { type: String, maxlength: 500 },
+  metaTimestamp: { type: Date },
+  templateName: { type: String, maxlength: 512 },
+  templateLanguage: { type: String, maxlength: 35 },
+  serviceWindowExpiresAt: { type: Date }
 }, baseOptions);
 
 whatsappMessageSchema.index({ createdAt: -1 });
 
+const messageDeliveryStatusSchema = new Schema({
+  eventKey: { type: String, required: true, unique: true },
+  metaMessageId: { type: String, required: true, index: true },
+  phoneE164: { type: String, trim: true },
+  status: { type: String, enum: WHATSAPP_DELIVERY_STATUSES, required: true },
+  timestamp: { type: Date, required: true },
+  failureCode: { type: String, maxlength: 100 },
+  failureReason: { type: String, maxlength: 500 }
+}, baseOptions);
+
+messageDeliveryStatusSchema.index({ metaMessageId: 1, status: 1, timestamp: 1 }, { unique: true });
+
 // Clinic & Doctor Settings
 const clinicSettingsSchema = new Schema({
   key: { type: String, default: "default", unique: true },
-  doctorName: { type: String, default: "Dr. Sohaib" },
-  clinicName: { type: String, default: "Iqbal Hospital" },
-  city: { type: String, default: "Bahawalpur" },
-  address: { type: String, default: "Noor Mahal Road, Bahawalpur" },
-  consultationDays: { type: String, default: "Monday to Thursday" },
-  consultationTime: { type: String, default: "4:30 PM to 8:30 PM" },
-  contactNumber: { type: String, default: "+92 300 1234567" },
-  timezone: { type: String, default: "Asia/Karachi" },
-  slotDurationMinutes: { type: Number, default: 15 },
+  doctorName: { type: String, default: "" },
+  clinicName: { type: String, default: "" },
+  city: { type: String, default: "" },
+  address: { type: String, default: "" },
+  consultationDays: { type: String, default: "" },
+  consultationTime: { type: String, default: "" },
+  remindersEnabled: { type: Boolean, default: true },
+  reminderIntervalsMinutes: {
+    type: [{ type: Number, min: 1, max: 525600 }],
+    default: [4320, 1440, 120],
+    validate: {
+      validator(values) {
+        return Array.isArray(values) && values.length <= 10 && new Set(values).size === values.length;
+      },
+      message: "Reminder intervals must be unique and contain no more than ten values"
+    }
+  },
   updatedBy: { type: Schema.Types.ObjectId, ref: "StaffUser" }
 }, baseOptions);
 
@@ -238,10 +357,16 @@ const medicalReportSchema = new Schema({
   appointment: { type: Schema.Types.ObjectId, ref: "Appointment" },
   reportTitle: { type: String, required: true, trim: true, maxlength: 200 },
   documentType: { type: String, enum: ["mri", "xray", "prescription", "lab", "discharge", "other", "blood_test"], default: "other" },
-  fileUrl: { type: String, required: true },
-  fileName: { type: String, required: true },
-  fileType: { type: String, default: "application/pdf" },
-  fileSize: { type: Number },
+  originalFilename: { type: String, required: true, trim: true, maxlength: 255 },
+  storageKey: { type: String, required: true, unique: true, sparse: true, select: false },
+  mimeType: { type: String, required: true, enum: ["application/pdf", "image/jpeg", "image/png"] },
+  fileSize: { type: Number, required: true, min: 1 },
+  uploadedByType: { type: String, required: true, enum: ["patient", "staff"] },
+  uploadedByStaff: { type: Schema.Types.ObjectId, ref: "StaffUser" },
+  uploadedAt: { type: Date, required: true, default: Date.now },
+  fileStatus: { type: String, required: true, enum: ["active", "deleting", "deleted", "quarantined"], default: "active", index: true },
+  deletedAt: { type: Date },
+  deletedBy: { type: Schema.Types.ObjectId, ref: "StaffUser" },
   notes: { type: String, maxlength: 1000 },
   status: { type: String, enum: ["New", "Uploaded", "Received", "Under Review", "Reviewed", "More Information Required", "pending", "archived"], default: "New" },
   reviewedBy: { type: Schema.Types.ObjectId, ref: "StaffUser" },
@@ -286,6 +411,7 @@ const emergencyAlertSchema = new Schema({
 const emailNotificationOutboxSchema = new Schema({
   appointmentId: { type: Schema.Types.ObjectId, ref: "Appointment", index: true },
   notificationType: { type: String, required: true },
+  dedupeKey: { type: String, required: true, maxlength: 300 },
   recipient: { type: String, required: true },
   channel: { type: String, default: "email" },
   requestId: { type: String },
@@ -304,19 +430,35 @@ const emailNotificationOutboxSchema = new Schema({
 }, baseOptions);
 
 emailNotificationOutboxSchema.index({ status: 1, nextRetryAt: 1 });
+emailNotificationOutboxSchema.index(
+  { dedupeKey: 1 },
+  { unique: true, partialFilterExpression: { dedupeKey: { $type: "string" } } }
+);
 
 // Reminder Job schema (Reminder)
 const reminderJobSchema = new Schema({
+  dedupeKey: { type: String, unique: true, sparse: true, maxlength: 300 },
   appointment: { type: Schema.Types.ObjectId, ref: "Appointment", index: true },
   patient: { type: Schema.Types.ObjectId, ref: "Patient", index: true },
   phoneE164: { type: String, required: true, index: true },
   type: { type: String, enum: ["appointment_reminder", "follow_up_reminder"], default: "appointment_reminder" },
   dueAt: { type: Date, required: true, index: true },
-  message: { type: String, required: true },
-  status: { type: String, enum: ["pending", "sent", "cancelled", "failed"], default: "pending" },
+  message: { type: String, required: true, maxlength: 2000 },
+  status: { type: String, enum: REMINDER_DELIVERY_STATUSES, default: "pending" },
   attempts: { type: Number, default: 0 },
-  sentAt: { type: Date }
+  sentAt: { type: Date },
+  metaMessageId: { type: String, index: true, sparse: true },
+  intervalMinutes: { type: Number },
+  scheduleRevision: { type: Number, default: 0 },
+  lastError: { type: String, maxlength: 500 },
+  failureCode: { type: String, maxlength: 100 },
+  lastAttemptAt: { type: Date }
 }, baseOptions);
+
+reminderJobSchema.index(
+  { appointment: 1, type: 1, intervalMinutes: 1, scheduleRevision: 1 },
+  { unique: true, partialFilterExpression: { appointment: { $type: "objectId" }, type: "appointment_reminder" } }
+);
 
 // Staff Note schema
 const staffNoteSchema = new Schema({
@@ -338,10 +480,21 @@ const notificationSchema = new Schema({
 const auditLogSchema = new Schema({
   actorType: { type: String, enum: ["staff", "patient", "system", "whatsapp"], required: true },
   actorStaff: { type: Schema.Types.ObjectId, ref: "StaffUser" },
+  actorPatient: { type: Schema.Types.ObjectId, ref: "Patient" },
+  actorId: { type: String, maxlength: 120 },
+  actorPhone: { type: String, maxlength: 40 },
+  actorRole: { type: String, enum: ["super_admin", "doctor", "receptionist", "clinic_staff"] },
   action: { type: String, required: true, index: true },
   entityType: { type: String, required: true },
   entityId: { type: String },
-  metadata: { type: Schema.Types.Mixed }
+  targetType: { type: String },
+  targetId: { type: String },
+  beforeSummary: { type: Schema.Types.Mixed },
+  afterSummary: { type: Schema.Types.Mixed },
+  metadata: { type: Schema.Types.Mixed },
+  requestId: { type: String, maxlength: 100 },
+  ip: { type: String, maxlength: 120 },
+  userAgent: { type: String, maxlength: 600 }
 }, baseOptions);
 
 auditLogSchema.index({ createdAt: -1 });
@@ -358,6 +511,7 @@ const EmailNotificationOutbox = mongoose.model("EmailNotificationOutbox", emailN
 const ReminderJob = mongoose.model("ReminderJob", reminderJobSchema);
 const ConversationSession = mongoose.model("ConversationSession", conversationSessionSchema);
 const WhatsAppMessage = mongoose.model("WhatsAppMessage", whatsappMessageSchema);
+const MessageDeliveryStatus = mongoose.model("MessageDeliveryStatus", messageDeliveryStatusSchema);
 
 const models = {
   Counter: mongoose.model("Counter", counterSchema),
@@ -366,6 +520,7 @@ const models = {
   RefreshTokenSession: mongoose.model("RefreshTokenSession", refreshTokenSessionSchema),
   Patient,
   PatientConsent: mongoose.model("PatientConsent", patientConsentSchema),
+  BookingRequest: mongoose.model("BookingRequest", bookingRequestSchema),
   ClinicLocation,
   Clinic: ClinicLocation, // Alias
   DoctorProfile,
@@ -375,6 +530,7 @@ const models = {
   ConversationSession,
   Conversation: ConversationSession, // Alias
   WhatsAppMessage,
+  MessageDeliveryStatus,
   Message: WhatsAppMessage, // Alias
   ClinicSettings: mongoose.model("ClinicSettings", clinicSettingsSchema),
   MedicalReport,

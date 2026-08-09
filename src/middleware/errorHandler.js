@@ -1,5 +1,6 @@
 const { AppError } = require("../utils/errors");
 const { config } = require("../config/env");
+const { logError } = require("../utils/safeLogger");
 
 function notFoundHandler(req, res, next) {
   next(new AppError(404, "NOT_FOUND", "The requested endpoint was not found"));
@@ -20,8 +21,8 @@ function errorHandler(error, req, res, next) {
   if (!config.isProduction && !isTrusted) body.error.debug = error.message;
 
   if (!isTrusted) {
-    console.error("Unhandled error:", {
-      message: error.message,
+    logError("Unhandled request error", error, {
+      requestId: req.requestId,
       path: req.originalUrl,
       method: req.method
     });

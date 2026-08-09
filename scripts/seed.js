@@ -1,4 +1,6 @@
 const bcrypt = require("bcryptjs");
+const { validatePassword } = require("../src/services/authService");
+const { logError } = require("../src/utils/safeLogger");
 const { connectDatabase } = require("../src/config/db");
 const {
   StaffUser,
@@ -18,6 +20,15 @@ const {
 } = require("../src/models");
 
 async function seed() {
+  if (process.env.NODE_ENV === "production" || !["development", "test"].includes(process.env.NODE_ENV || "")) {
+    throw new Error("Demo seeding is restricted to an explicit development or test environment.");
+  }
+  if (process.env.DEMO_SEED_CONFIRM !== "ERASE_LOCAL_DEMO_DATA") {
+    throw new Error("Set DEMO_SEED_CONFIRM=ERASE_LOCAL_DEMO_DATA to acknowledge destructive demo seeding.");
+  }
+  const demoPassword = String(process.env.DEMO_SEED_PASSWORD || "");
+  const passwordError = validatePassword(demoPassword);
+  if (passwordError) throw new Error(`DEMO_SEED_PASSWORD is invalid: ${passwordError}`);
   console.log("Starting Dr. Sohaib Database Seeding...");
   await connectDatabase();
 
@@ -42,10 +53,10 @@ async function seed() {
   console.log("Existing data cleared.");
 
   // 1. Seed Demo Staff Users (4 users)
-  const passwordHashAdmin = await bcrypt.hash("Admin@123", 10);
-  const passwordHashDoctor = await bcrypt.hash("Doctor@123", 10);
-  const passwordHashReception = await bcrypt.hash("Reception@123", 10);
-  const passwordHashStaff = await bcrypt.hash("Staff@123", 10);
+  const passwordHashAdmin = await bcrypt.hash(demoPassword, 12);
+  const passwordHashDoctor = await bcrypt.hash(demoPassword, 12);
+  const passwordHashReception = await bcrypt.hash(demoPassword, 12);
+  const passwordHashStaff = await bcrypt.hash(demoPassword, 12);
 
   const adminUser = await StaffUser.create({
     name: "Super Admin",
@@ -105,9 +116,7 @@ async function seed() {
     address: "Noor Mahal Road, Bahawalpur",
     consultationDays: "Monday to Thursday",
     consultationTime: "4:30 PM to 8:30 PM",
-    contactNumber: "+92 300 1234567",
-    timezone: "Asia/Karachi",
-    slotDurationMinutes: 15,
+    reminderIntervalsMinutes: [4320, 1440, 120],
     updatedBy: adminUser._id
   });
 
@@ -119,8 +128,6 @@ async function seed() {
     fullAddress: "Noor Mahal Road, Bahawalpur",
     contactNumber: "+92 300 1234567",
     status: "Active",
-    isActive: true,
-    bookingEnabled: true,
     timezone: "Asia/Karachi",
     slotDurationMinutes: 15,
     appointmentFee: 2500,
@@ -143,8 +150,6 @@ async function seed() {
     fullAddress: "Main City Center, Bahawalnagar",
     contactNumber: "+92 300 1234567",
     status: "Coming Soon",
-    isActive: false,
-    bookingEnabled: false,
     timezone: "Asia/Karachi",
     slotDurationMinutes: 15,
     appointmentFee: 2000,
@@ -158,8 +163,6 @@ async function seed() {
     fullAddress: "Hospital Road, Rahim Yar Khan",
     contactNumber: "+92 300 1234567",
     status: "Coming Soon",
-    isActive: false,
-    bookingEnabled: false,
     timezone: "Asia/Karachi",
     slotDurationMinutes: 15,
     appointmentFee: 2000,
@@ -263,35 +266,8 @@ async function seed() {
   const appointments = await Appointment.insertMany(appointmentsData);
   console.log("25 Appointments seeded.");
 
-  // 7. Seed 8 Uploaded Medical Reports
-  const reportTypes = ["xray", "mri", "blood_test", "prescription", "lab", "discharge", "other", "mri"];
-  const reportTitles = [
-    "Knee X-Ray Scan", "Lumbar Spine MRI", "Uric Acid & Blood Test", "Prescription Notes",
-    "Laboratory Blood Report", "Discharge Summary", "Ultrasound Scan", "Brain MRI Scan"
-  ];
-  const reportStatuses = ["Uploaded", "Received", "Under Review", "Reviewed", "More Information Required", "Uploaded", "Reviewed", "Under Review"];
-  
-  for (let i = 0; i < 8; i++) {
-    const appt = appointments[i % appointments.length];
-    await MedicalReport.create({
-      reportId: `RPT-10000${i + 1}`,
-      patient: patients[i]._id,
-      patientPhone: patients[i].phoneE164,
-      appointmentId: appt.appointmentId,
-      appointment: appt._id,
-      reportTitle: `${patients[i].fullName} - ${reportTitles[i]}`,
-      documentType: reportTypes[i],
-      fileUrl: `/uploads/sample_report_${i + 1}.pdf`,
-      fileName: `report_${patients[i].fullName.replace(/\s+/g, "_")}.pdf`,
-      fileType: "application/pdf",
-      fileSize: 1024 * 500 * (i + 1),
-      notes: `Medical document uploaded for Dr. Sohaib review.`,
-      status: reportStatuses[i],
-      reviewedBy: i % 2 === 0 ? doctorUser._id : null,
-      reviewedAt: i % 2 === 0 ? new Date() : null
-    });
-  }
-  console.log("8 Medical Reports seeded.");
+  // Medical reports are intentionally not seeded. Every report record must be
+  // backed by a real object in private storage through the upload endpoint.
 
   // 8. Seed 6 Online Consultation Requests
   const consultStatuses = ["Pending", "Under Review", "Approved", "Scheduled", "Completed", "Rejected"];
@@ -397,17 +373,13 @@ async function seed() {
 
   console.log("\n==========================================");
   console.log("SUCCESS: Database Seeding Completed!");
-  console.log("Demo Credentials:");
-  console.log(" - Super Admin: admin@drsohaibdemo.com / Admin@123");
-  console.log(" - Doctor:      doctor@drsohaibdemo.com / Doctor@123");
-  console.log(" - Reception:   reception@drsohaibdemo.com / Reception@123");
-  console.log(" - Staff:       staff@drsohaibdemo.com / Staff@123");
+  console.log("Demo staff accounts were created with the explicitly supplied development password.");
   console.log("==========================================\n");
 
   process.exit(0);
 }
 
 seed().catch((err) => {
-  console.error("Seeding failed:", err);
+  logError("Seeding failed", err);
   process.exit(1);
 });

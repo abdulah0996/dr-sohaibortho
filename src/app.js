@@ -9,12 +9,13 @@ const mongoSanitize = require("express-mongo-sanitize");
 const { config } = require("./config/env");
 const { apiLimiter, strictOrigin } = require("./middleware/security");
 const { notFoundHandler, errorHandler } = require("./middleware/errorHandler");
+const { forbidden } = require("./utils/errors");
 
 function createApp() {
   const app = express();
   const rootDir = path.resolve(__dirname, "..");
 
-  app.set("trust proxy", 1);
+  app.set("trust proxy", config.trustProxy);
   app.disable("x-powered-by");
 
   app.use((req, res, next) => {
@@ -22,6 +23,17 @@ function createApp() {
     req.requestId = /^[a-zA-Z0-9._-]{8,100}$/.test(incoming) ? incoming : randomUUID();
     res.setHeader("X-Request-Id", req.requestId);
     next();
+  });
+
+  app.use((req, res, next) => {
+    if (!config.isProduction || req.secure) return next();
+    if (["GET", "HEAD"].includes(req.method) && !req.path.startsWith("/api/")) {
+      return res.redirect(308, `${new URL(config.frontendUrl).origin}${req.originalUrl}`);
+    }
+    return res.status(426).json({
+      success: false,
+      error: { code: "HTTPS_REQUIRED", message: "HTTPS is required." }
+    });
   });
 
   app.use(helmet({
@@ -44,7 +56,7 @@ function createApp() {
     origin(origin, callback) {
       if (!origin) return callback(null, true);
       if (config.corsOrigins.includes(origin)) return callback(null, true);
-      return callback(null, true);
+      return callback(forbidden("Request origin is not allowed"));
     },
     credentials: true
   }));
@@ -56,7 +68,7 @@ function createApp() {
   }));
   app.use(express.urlencoded({ extended: false, limit: "10mb" }));
   app.use(cookieParser(config.cookieSecret));
-  app.use(mongoSanitize());
+  app.use(mongoSanitize({ replaceWith: "_" }));
   app.use(strictOrigin);
   app.use("/api", apiLimiter);
 
@@ -80,15 +92,28 @@ function createApp() {
   app.use("/api/patients", require("./routes/patients"));
   app.use("/api/reminders", require("./routes/reminders"));
 
-  app.use(express.static(rootDir, {
-    index: false,
-    setHeaders(res) {
-      res.setHeader("Cache-Control", "no-store");
-    }
-  }));
+  const publicFiles = new Map([
+    ["/", "index.html"],
+    ["/index.html", "index.html"],
+    ["/style.css", "style.css"],
+    ["/api-client.js", "api-client.js"],
+    ["/script.js", "script.js"]
+  ]);
+
+  app.get(Array.from(publicFiles.keys()), (req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    res.sendFile(path.join(rootDir, publicFiles.get(req.path) || "index.html"));
+  });
 
   app.get("*", (req, res, next) => {
     if (req.path.startsWith("/api")) return next();
+    let decodedPath;
+    try { decodedPath = decodeURIComponent(req.path); }
+    catch { return next(); }
+    const segments = decodedPath.split("/").filter(Boolean);
+    const reserved = new Set(["src", "scripts", "tests", "docs", "node_modules", "private-storage", "logs", "dump", "backups"]);
+    if (segments.some((segment) => segment.startsWith(".")) || reserved.has(String(segments[0] || "").toLowerCase())) return next();
+    if (path.extname(decodedPath)) return next();
     res.sendFile(path.join(rootDir, "index.html"));
   });
 

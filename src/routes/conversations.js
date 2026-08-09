@@ -3,11 +3,19 @@ const { z } = require("zod");
 const { ConversationSession, WhatsAppMessage, Patient } = require("../models");
 const { asyncHandler } = require("../utils/asyncHandler");
 const { badRequest, notFound } = require("../utils/errors");
+const { requireAuth } = require("../middleware/auth");
+const { requirePermission } = require("../middleware/permissions");
+const { normalizePhone } = require("../utils/security");
+const { audit } = require("../services/auditService");
+const mongoose = require("mongoose");
+const { publicFormLimiter } = require("../middleware/security");
+const { sendStaffMessage } = require("../services/whatsappService");
+const { AppError } = require("../utils/errors");
 
 const router = express.Router();
 
 // POST /api/conversations (Start / Submit Staff Handover Request)
-router.post("/", asyncHandler(async (req, res) => {
+router.post("/", publicFormLimiter, asyncHandler(async (req, res) => {
   const schema = z.object({
     name: z.string().optional().or(z.literal("")),
     phone: z.string().min(7).max(40),
@@ -20,20 +28,23 @@ router.post("/", asyncHandler(async (req, res) => {
   if (!parsed.success) throw badRequest("Invalid conversation request data", parsed.error.flatten());
   const input = parsed.data;
 
-  const phoneE164 = input.phone.startsWith("+") ? input.phone : `+${input.phone}`;
+  const phoneE164 = normalizePhone(input.phone);
+  if (!phoneE164) throw badRequest("Invalid conversation request data");
+  const serviceWindowExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
   let session = await ConversationSession.findOne({ phoneE164 });
 
   if (!session) {
     session = await ConversationSession.create({
       phoneE164,
       humanRequired: true,
-      aiPaused: true,
-      lastMessageAt: new Date()
+      aiPaused: false,
+      lastMessageAt: new Date(),
+      serviceWindowExpiresAt
     });
   } else {
     session.humanRequired = true;
-    session.aiPaused = true;
     session.lastMessageAt = new Date();
+    session.serviceWindowExpiresAt = serviceWindowExpiresAt;
     await session.save();
   }
 
@@ -44,29 +55,42 @@ router.post("/", asyncHandler(async (req, res) => {
     phoneE164,
     conversation: session._id,
     body: input.message,
-    status: "received"
+    status: "received",
+    serviceWindowExpiresAt
   });
+
+  await audit({ actorType: "patient", action: "conversation.handover_requested", entityType: "conversation", entityId: String(session._id), req });
 
   res.status(201).json({
     success: true,
-    session,
+    session: { id: session._id, humanRequired: session.humanRequired },
     message: "Your message has been sent to Dr. Sohaib's clinic staff. An assistant will contact you shortly."
   });
 }));
 
+router.use(requireAuth, requirePermission("conversations.read"));
+
 // GET /api/conversations - List Conversations
 router.get("/", asyncHandler(async (req, res) => {
+  const limit = Math.max(1, Math.min(Number(req.query.limit) || 50, 100));
+  const page = Math.max(1, Number(req.query.page) || 1);
   const conversations = await ConversationSession.find()
-    .populate("patient takenOverBy")
+    .populate("patient", "patientId fullName phoneE164 preferredLanguage city")
+    .populate("takenOverBy", "name role")
     .sort({ lastMessageAt: -1 })
+    .skip((page - 1) * limit)
+    .limit(limit)
     .lean();
+  await audit({ actorType: "staff", action: "conversations.list_viewed", entityType: "conversation", metadata: { resultCount: conversations.length }, req });
   res.json({ success: true, conversations });
 }));
 
 // GET /api/conversations/:id
 router.get("/:id", asyncHandler(async (req, res) => {
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) throw notFound("Conversation not found");
   const session = await ConversationSession.findById(req.params.id)
-    .populate("patient takenOverBy")
+    .populate("patient", "patientId fullName phoneE164 preferredLanguage city")
+    .populate("takenOverBy", "name role")
     .lean();
 
   if (!session) throw notFound("Conversation not found");
@@ -75,34 +99,35 @@ router.get("/:id", asyncHandler(async (req, res) => {
     .sort({ createdAt: 1 })
     .lean();
 
+  await audit({ actorType: "staff", action: "conversation.viewed", entityType: "conversation", entityId: String(session._id), req });
+
   res.json({ success: true, conversation: session, session, messages });
 }));
 
 // POST /api/conversations/:id/messages
-router.post("/:id/messages", asyncHandler(async (req, res) => {
+router.post("/:id/messages", requirePermission("conversations.manage"), asyncHandler(async (req, res) => {
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) throw notFound("Conversation not found");
   const session = await ConversationSession.findById(req.params.id);
   if (!session) throw notFound("Conversation not found");
 
-  const { body, senderType } = req.body;
-  if (!body) throw badRequest("Message body is required.");
+  const parsed = z.object({ body: z.string().min(1).max(4000) }).strict().safeParse(req.body);
+  if (!parsed.success) throw badRequest("Message body is required.");
 
-  const msg = await WhatsAppMessage.create({
-    direction: senderType === "patient" ? "incoming" : "outgoing",
-    senderType: senderType || "staff",
-    phoneE164: session.phoneE164,
-    conversation: session._id,
-    body,
-    status: "sent"
-  });
+  const result = await sendStaffMessage(session.phoneE164, parsed.data.body, { senderStaff: req.user._id });
+  const sentMessage = result.message;
 
   session.lastMessageAt = new Date();
   await session.save();
 
-  res.status(201).json({ success: true, message: msg });
+  await audit({ actorType: "staff", action: result.status === "queued" ? "conversation.staff_message_queued" : "conversation.staff_message_failed", entityType: "conversation", entityId: String(session._id), metadata: { failureCode: result.failureCode }, req });
+
+  if (result.status !== "queued") throw new AppError(result.failureCode === "SERVICE_WINDOW_CLOSED" ? 409 : 502, result.failureCode || "WHATSAPP_SEND_FAILED", result.error || "WhatsApp message could not be sent.");
+  res.status(201).json({ success: true, message: sentMessage });
 }));
 
 // POST /api/conversations/:id/takeover
-router.post("/:id/takeover", asyncHandler(async (req, res) => {
+router.post("/:id/takeover", requirePermission("conversations.manage"), asyncHandler(async (req, res) => {
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) throw notFound("Conversation not found");
   const session = await ConversationSession.findById(req.params.id);
   if (!session) throw notFound("Conversation not found");
 
@@ -111,11 +136,14 @@ router.post("/:id/takeover", asyncHandler(async (req, res) => {
   if (req.user) session.takenOverBy = req.user._id;
   await session.save();
 
+  await audit({ actorType: "staff", action: "conversation.takeover", entityType: "conversation", entityId: String(session._id), req });
+
   res.json({ success: true, session, message: "Human takeover activated. AI is paused." });
 }));
 
 // POST /api/conversations/:id/reactivate-ai
-router.post("/:id/reactivate-ai", asyncHandler(async (req, res) => {
+router.post("/:id/reactivate-ai", requirePermission("conversations.manage"), asyncHandler(async (req, res) => {
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) throw notFound("Conversation not found");
   const session = await ConversationSession.findById(req.params.id);
   if (!session) throw notFound("Conversation not found");
 
@@ -123,6 +151,8 @@ router.post("/:id/reactivate-ai", asyncHandler(async (req, res) => {
   session.aiPaused = false;
   session.takenOverBy = null;
   await session.save();
+
+  await audit({ actorType: "staff", action: "conversation.reactivate_ai", entityType: "conversation", entityId: String(session._id), req });
 
   res.json({ success: true, session, message: "AI assistant reactivated." });
 }));

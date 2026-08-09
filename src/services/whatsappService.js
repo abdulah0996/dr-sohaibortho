@@ -2,10 +2,22 @@ const crypto = require("crypto");
 const { config } = require("../config/env");
 const {
   ConversationSession,
+  Appointment,
   MessageDeliveryStatus,
+  ReminderJob,
   WhatsAppMessage
 } = require("../models");
 const { normalizePhone } = require("../utils/security");
+const { shouldAdvanceDeliveryStatus } = require("../domain/whatsappRules");
+
+const TEMPLATE_NAME_RE = /^[a-z0-9_]{1,512}$/;
+const TEMPLATE_LANGUAGE_RE = /^[a-z]{2,3}(?:_[A-Z]{2})?$/;
+let metaFetch = (...args) => fetch(...args);
+
+function setMetaFetchForTests(fetchImplementation) {
+  if (config.nodeEnv !== "test") throw new Error("Meta transport injection is only available in tests.");
+  metaFetch = fetchImplementation || ((...args) => fetch(...args));
+}
 
 function isWhatsAppConfigured() {
   return Boolean(config.whatsapp.accessToken && config.whatsapp.phoneNumberId);
@@ -14,10 +26,7 @@ function isWhatsAppConfigured() {
 function verifyMetaSignature(rawBody, signatureHeader, secret = config.whatsapp.metaAppSecret) {
   if (!secret) return !config.isProduction;
   if (!signatureHeader || !signatureHeader.startsWith("sha256=")) return false;
-  const expected = crypto
-    .createHmac("sha256", secret)
-    .update(rawBody || Buffer.from(""))
-    .digest("hex");
+  const expected = crypto.createHmac("sha256", secret).update(rawBody || Buffer.from("")).digest("hex");
   const received = signatureHeader.slice("sha256=".length);
   if (received.length !== expected.length) return false;
   return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(received));
@@ -27,145 +36,234 @@ function graphUrl(path) {
   return `https://graph.facebook.com/${config.whatsapp.graphVersion}/${path}`;
 }
 
-async function createOutgoingLog({ to, body, type = "text", payload, status = "queued", metaMessageId, error }) {
-  const session = await ConversationSession.findOneAndUpdate(
-    { phoneE164: normalizePhone(to) },
-    { $setOnInsert: { phoneE164: normalizePhone(to) }, $set: { lastMessageAt: new Date() } },
+function safeFailure(data, httpStatus) {
+  const metaError = data?.error || {};
+  return {
+    failureCode: String(metaError.code || metaError.error_subcode || `HTTP_${httpStatus || 0}`).slice(0, 100),
+    failureReason: String(metaError.message || metaError.error_user_msg || `Meta API returned ${httpStatus || "an error"}`).slice(0, 500)
+  };
+}
+
+async function ensureSession(phoneE164, update = {}) {
+  return ConversationSession.findOneAndUpdate(
+    { phoneE164 },
+    { $setOnInsert: { phoneE164 }, $set: { lastMessageAt: new Date(), ...update } },
     { upsert: true, new: true }
   );
+}
+
+async function createOutgoingLog({
+  to, body, type = "text", senderType = "ai", senderStaff,
+  templateName, templateLanguage, status = "queued", failureCode, failureReason
+}) {
+  const phoneE164 = normalizePhone(to);
+  const session = await ensureSession(phoneE164);
   return WhatsAppMessage.create({
-    metaMessageId,
     direction: "outgoing",
-    phoneE164: normalizePhone(to),
+    senderType,
+    senderStaff,
+    phoneE164,
     conversation: session._id,
     messageType: type,
     body,
+    templateName,
+    templateLanguage,
     status,
-    payload,
-    error
+    error: failureReason,
+    failureCode,
+    failureReason
   });
 }
 
-async function sendWhatsAppRequest(payload, to, bodyForLog) {
-  if (!isWhatsAppConfigured()) {
-    await createOutgoingLog({
-      to,
-      body: bodyForLog,
-      type: payload.type,
-      payload,
-      status: "failed",
-      error: "WhatsApp Cloud API is not configured"
-    });
-    return { configured: false, status: "not_configured" };
-  }
+async function failOutgoing(message, failureCode, failureReason) {
+  message.status = "failed";
+  message.failureCode = String(failureCode || "META_SEND_FAILED").slice(0, 100);
+  message.failureReason = String(failureReason || "WhatsApp message could not be sent.").slice(0, 500);
+  message.error = message.failureReason;
+  await message.save();
+  return {
+    configured: isWhatsAppConfigured(),
+    status: "failed",
+    failureCode: message.failureCode,
+    error: message.failureReason,
+    message
+  };
+}
 
-  const response = await fetch(graphUrl(`${config.whatsapp.phoneNumberId}/messages`), {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${config.whatsapp.accessToken}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(10000)
-  });
-
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    await createOutgoingLog({
-      to,
-      body: bodyForLog,
-      type: payload.type,
-      payload,
-      status: "failed",
-      error: data?.error?.message || `Meta API returned ${response.status}`
-    });
-    return { configured: true, status: "failed", error: data?.error?.message };
-  }
-
-  const metaMessageId = data?.messages?.[0]?.id;
-  await createOutgoingLog({
+async function sendWhatsAppRequest(payload, to, bodyForLog, options = {}) {
+  const message = await createOutgoingLog({
     to,
     body: bodyForLog,
     type: payload.type,
-    payload,
-    status: "sent_to_meta",
-    metaMessageId
+    senderType: options.senderType,
+    senderStaff: options.senderStaff,
+    templateName: options.templateName,
+    templateLanguage: options.templateLanguage
   });
-  return { configured: true, status: "sent_to_meta", metaMessageId, raw: data };
+  if (!isWhatsAppConfigured()) {
+    return failOutgoing(message, "NOT_CONFIGURED", "WhatsApp Cloud API is not configured.");
+  }
+
+  let response;
+  let data;
+  try {
+    response = await metaFetch(graphUrl(`${config.whatsapp.phoneNumberId}/messages`), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${config.whatsapp.accessToken}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(10000)
+    });
+    data = await response.json().catch(() => ({}));
+  } catch (error) {
+    const code = error?.name === "TimeoutError" ? "META_TIMEOUT" : "META_NETWORK_ERROR";
+    return failOutgoing(message, code, "The WhatsApp provider could not be reached.");
+  }
+
+  if (!response.ok) {
+    const failure = safeFailure(data, response.status);
+    return failOutgoing(message, failure.failureCode, failure.failureReason);
+  }
+
+  const metaMessageId = data?.messages?.[0]?.id;
+  if (!metaMessageId) return failOutgoing(message, "META_RESPONSE_INVALID", "Meta accepted the request without returning a message ID.");
+  message.metaMessageId = metaMessageId;
+  message.status = "queued";
+  await message.save();
+  return { configured: true, status: "queued", metaMessageId, message };
 }
 
-async function sendText(to, body) {
+async function sendText(to, body, options = {}) {
+  const phoneE164 = normalizePhone(to);
   const payload = {
     messaging_product: "whatsapp",
     recipient_type: "individual",
-    to: normalizePhone(to).replace("+", ""),
+    to: phoneE164?.replace("+", ""),
     type: "text",
     text: { preview_url: false, body }
   };
-  return sendWhatsAppRequest(payload, to, body);
+  return sendWhatsAppRequest(payload, phoneE164, body, options);
 }
 
-async function sendTemplate(to, templateName, languageCode, parameters = []) {
-  if (!templateName) {
-    return { configured: false, status: "not_configured" };
+async function sendTemplate(to, templateName, languageCode, parameters = [], options = {}) {
+  const phoneE164 = normalizePhone(to);
+  if (!TEMPLATE_NAME_RE.test(String(templateName || ""))) {
+    const message = await createOutgoingLog({
+      to: phoneE164, body: "WhatsApp appointment notification", type: "template",
+      senderType: options.senderType, senderStaff: options.senderStaff,
+      templateName, templateLanguage: languageCode, status: "failed",
+      failureCode: "TEMPLATE_NOT_CONFIGURED", failureReason: "The required WhatsApp template is not configured."
+    });
+    return { configured: false, status: "failed", failureCode: message.failureCode, error: message.failureReason, message };
+  }
+  if (!TEMPLATE_LANGUAGE_RE.test(String(languageCode || ""))) {
+    const message = await createOutgoingLog({
+      to: phoneE164, body: `Template: ${templateName}`, type: "template",
+      senderType: options.senderType, senderStaff: options.senderStaff,
+      templateName, templateLanguage: languageCode, status: "failed",
+      failureCode: "TEMPLATE_LANGUAGE_INVALID", failureReason: "The configured WhatsApp template language is invalid."
+    });
+    return { configured: true, status: "failed", failureCode: message.failureCode, error: message.failureReason, message };
+  }
+  if (options.expectedParameterCount !== undefined && parameters.length !== options.expectedParameterCount) {
+    const message = await createOutgoingLog({
+      to: phoneE164, body: `Template: ${templateName}`, type: "template",
+      senderType: options.senderType, senderStaff: options.senderStaff,
+      templateName, templateLanguage: languageCode, status: "failed",
+      failureCode: "TEMPLATE_PARAMETERS_INVALID", failureReason: "The WhatsApp template parameter count does not match its contract."
+    });
+    return { configured: true, status: "failed", failureCode: message.failureCode, error: message.failureReason, message };
   }
 
   const payload = {
     messaging_product: "whatsapp",
-    to: normalizePhone(to).replace("+", ""),
+    to: phoneE164.replace("+", ""),
     type: "template",
     template: {
       name: templateName,
-      language: { code: languageCode || "en" },
-      components: parameters.length
-        ? [{
-          type: "body",
-          parameters: parameters.map((text) => ({ type: "text", text: String(text) }))
-        }]
-        : []
+      language: { code: languageCode },
+      components: parameters.length ? [{
+        type: "body",
+        parameters: parameters.map((value) => ({ type: "text", text: String(value) }))
+      }] : []
     }
   };
-  return sendWhatsAppRequest(payload, to, `Template: ${templateName}`);
+  return sendWhatsAppRequest(payload, phoneE164, `Template: ${templateName}`, {
+    ...options, templateName, templateLanguage: languageCode
+  });
 }
 
-async function sendReplyButtons(to, body, buttons) {
-  const payload = { messaging_product: "whatsapp", to: normalizePhone(to).replace("+", ""), type: "interactive",
-    interactive: { type: "button", body: { text: body }, action: { buttons: buttons.slice(0, 3).map((button) => ({ type: "reply", reply: { id: button.id, title: button.title.slice(0, 20) } })) } } };
-  return sendWhatsAppRequest(payload, to, body);
+async function sendReplyButtons(to, body, buttons, options = {}) {
+  const phoneE164 = normalizePhone(to);
+  const payload = {
+    messaging_product: "whatsapp", to: phoneE164.replace("+", ""), type: "interactive",
+    interactive: {
+      type: "button", body: { text: body },
+      action: { buttons: buttons.slice(0, 3).map((button) => ({ type: "reply", reply: { id: button.id, title: button.title.slice(0, 20) } })) }
+    }
+  };
+  return sendWhatsAppRequest(payload, phoneE164, body, options);
 }
 
-async function sendInteractiveList(to, body, buttonText, sections) {
-  const payload = { messaging_product: "whatsapp", to: normalizePhone(to).replace("+", ""), type: "interactive",
-    interactive: { type: "list", body: { text: body }, action: { button: buttonText.slice(0, 20), sections } } };
-  return sendWhatsAppRequest(payload, to, body);
+async function sendInteractiveList(to, body, buttonText, sections, options = {}) {
+  const phoneE164 = normalizePhone(to);
+  const normalizedSections = sections.map((section) => ({ ...section, rows: (section.rows || []).slice(0, 10) }));
+  const payload = {
+    messaging_product: "whatsapp", to: phoneE164.replace("+", ""), type: "interactive",
+    interactive: { type: "list", body: { text: body }, action: { button: buttonText.slice(0, 20), sections: normalizedSections } }
+  };
+  return sendWhatsAppRequest(payload, phoneE164, body, options);
 }
 
 async function markMessageAsRead(metaMessageId) {
-  if (!isWhatsAppConfigured() || !metaMessageId) return { status: "not_configured" };
-  const response = await fetch(graphUrl(`${config.whatsapp.phoneNumberId}/messages`), { method: "POST", headers: { Authorization: `Bearer ${config.whatsapp.accessToken}`, "Content-Type": "application/json" }, body: JSON.stringify({ messaging_product: "whatsapp", status: "read", message_id: metaMessageId }), signal: AbortSignal.timeout(10000) });
-  return { status: response.ok ? "read" : "failed" };
+  if (!isWhatsAppConfigured() || !metaMessageId) return { status: "failed" };
+  try {
+    const response = await metaFetch(graphUrl(`${config.whatsapp.phoneNumberId}/messages`), {
+      method: "POST",
+      headers: { Authorization: `Bearer ${config.whatsapp.accessToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ messaging_product: "whatsapp", status: "read", message_id: metaMessageId }),
+      signal: AbortSignal.timeout(10000)
+    });
+    return { status: response.ok ? "read" : "failed" };
+  } catch {
+    return { status: "failed" };
+  }
 }
 
-const sendStaffMessage = sendText;
+async function isServiceWindowOpen(phone) {
+  const phoneE164 = normalizePhone(phone);
+  return Boolean(await ConversationSession.exists({ phoneE164, serviceWindowExpiresAt: { $gt: new Date() } }));
+}
 
-async function logIncomingMessage({ metaMessageId, phoneE164, body, messageType, payload }) {
-  const session = await ConversationSession.findOneAndUpdate(
-    { phoneE164 },
-    { $setOnInsert: { phoneE164 }, $set: { lastMessageAt: new Date() } },
-    { upsert: true, new: true }
-  );
+async function sendStaffMessage(to, body, options = {}) {
+  if (!(await isServiceWindowOpen(to))) {
+    const message = await createOutgoingLog({
+      to, body, senderType: "staff", senderStaff: options.senderStaff,
+      status: "failed", failureCode: "SERVICE_WINDOW_CLOSED",
+      failureReason: "The 24-hour WhatsApp service window is closed; an approved template is required."
+    });
+    return { configured: isWhatsAppConfigured(), status: "failed", failureCode: message.failureCode, error: message.failureReason, message };
+  }
+  return sendText(to, body, { senderType: "staff", senderStaff: options.senderStaff });
+}
 
+async function logIncomingMessage({ metaMessageId, phoneE164, body, messageType }) {
+  const normalizedPhone = normalizePhone(phoneE164);
+  const serviceWindowExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+  const session = await ensureSession(normalizedPhone, { serviceWindowExpiresAt });
   try {
     const message = await WhatsAppMessage.create({
       metaMessageId,
       direction: "incoming",
-      phoneE164,
+      senderType: "patient",
+      phoneE164: normalizedPhone,
       conversation: session._id,
       messageType,
       body,
       status: "received",
-      payload,
-      serviceWindowExpiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000)
+      serviceWindowExpiresAt
     });
     return { duplicate: false, message, session };
   } catch (error) {
@@ -175,39 +273,61 @@ async function logIncomingMessage({ metaMessageId, phoneE164, body, messageType,
 }
 
 async function updateDeliveryStatus(status) {
+  const nextStatus = String(status.status || "");
   const phoneE164 = normalizePhone(status.recipient_id || status.phone_number || "");
-  const timestamp = status.timestamp
+  const timestamp = status.timestamp && Number.isFinite(Number(status.timestamp))
     ? new Date(Number(status.timestamp) * 1000)
     : new Date();
-  await MessageDeliveryStatus.create({
-    metaMessageId: status.id,
-    phoneE164,
-    status: status.status,
-    timestamp,
-    payload: status
-  });
-  await WhatsAppMessage.updateOne(
-    { metaMessageId: status.id },
-    {
-      $set: {
-        status: status.status === "sent" ? "sent_to_meta" : status.status,
-        error: status.errors?.[0]?.title || status.errors?.[0]?.message
-      }
-    }
+  const failureCode = status.errors?.[0]?.code ? String(status.errors[0].code) : undefined;
+  const failureReason = String(status.errors?.[0]?.title || status.errors?.[0]?.message || "").slice(0, 500) || undefined;
+  const eventKey = crypto.createHash("sha256").update(`${status.id}|${nextStatus}|${timestamp.toISOString()}`).digest("hex");
+  const deliveryEvent = await MessageDeliveryStatus.updateOne(
+    { eventKey },
+    { $setOnInsert: { metaMessageId: status.id, phoneE164, status: nextStatus, timestamp, failureCode, failureReason } },
+    { upsert: true, runValidators: true }
   );
+
+  const message = await WhatsAppMessage.findOne({ metaMessageId: status.id });
+  if (message && shouldAdvanceDeliveryStatus(message.status, nextStatus)) {
+    message.status = nextStatus === "deleted" ? message.status : nextStatus;
+    message.metaTimestamp = timestamp;
+    if (nextStatus === "failed") {
+      message.failureCode = failureCode || "META_DELIVERY_FAILED";
+      message.failureReason = failureReason || "Meta reported delivery failure.";
+      message.error = message.failureReason;
+    }
+    await message.save();
+  }
+  if (["sent", "delivered", "read", "failed"].includes(nextStatus)) {
+    const reminderJobs = await ReminderJob.find({ metaMessageId: status.id, status: { $ne: "cancelled" } }).select("appointment").lean();
+    await ReminderJob.updateMany(
+      { metaMessageId: status.id, status: { $ne: "cancelled" } },
+      { $set: { status: nextStatus, ...(nextStatus === "sent" ? { sentAt: timestamp } : {}), ...(failureReason ? { lastError: failureReason } : {}) } }
+    );
+    for (const appointmentId of new Set(reminderJobs.map((job) => String(job.appointment || "")).filter(Boolean))) {
+      const outstanding = await ReminderJob.countDocuments({
+        appointment: appointmentId,
+        status: { $in: ["pending", "processing", "queued"] }
+      });
+      const failed = await ReminderJob.countDocuments({ appointment: appointmentId, status: "failed" });
+      await Appointment.updateOne(
+        { _id: appointmentId },
+        { $set: { reminderStatus: outstanding ? "partially_sent" : (failed ? "failed" : "sent") } }
+      );
+    }
+  }
+  return { duplicate: deliveryEvent.upsertedCount === 0, message };
 }
 
 function extractWebhookMessages(body) {
   const changes = body?.entry?.flatMap((entry) => entry.changes || []) || [];
   const messages = [];
   const statuses = [];
-
   for (const change of changes) {
     const value = change.value || {};
     if (Array.isArray(value.statuses)) statuses.push(...value.statuses);
     if (!Array.isArray(value.messages)) continue;
     for (const message of value.messages) {
-      const phone = normalizePhone(message.from);
       const text = message.text?.body
         || message.button?.text
         || message.interactive?.button_reply?.title
@@ -215,17 +335,15 @@ function extractWebhookMessages(body) {
         || "";
       messages.push({
         metaMessageId: message.id,
-        phoneE164: phone,
+        phoneE164: normalizePhone(message.from),
         type: message.type,
         body: text,
         replyId: message.interactive?.button_reply?.id || message.interactive?.list_reply?.id || message.button?.payload || "",
         replyTitle: message.interactive?.button_reply?.title || message.interactive?.list_reply?.title || message.button?.text || "",
-        mediaId: message.image?.id || message.document?.id || message.audio?.id || message.video?.id || message.sticker?.id || "",
-        payload: message
+        mediaId: message.image?.id || message.document?.id || message.audio?.id || message.video?.id || message.sticker?.id || ""
       });
     }
   }
-
   return { messages, statuses };
 }
 
@@ -237,8 +355,10 @@ module.exports = {
   sendInteractiveList,
   sendTemplate,
   markMessageAsRead,
+  isServiceWindowOpen,
   sendStaffMessage,
   logIncomingMessage,
   updateDeliveryStatus,
-  extractWebhookMessages
+  extractWebhookMessages,
+  setMetaFetchForTests
 };

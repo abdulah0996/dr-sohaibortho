@@ -9,11 +9,13 @@ const {
   sendText,
   sendReplyButtons,
   sendInteractiveList,
-  markMessageAsRead
+  markMessageAsRead,
+  sendStaffMessage
 } = require("../services/whatsappService");
 const { handleIncomingMessage } = require("../conversation/orchestrator");
 const { ConversationSession, WhatsAppMessage, Patient } = require("../models");
 const { requireAuth } = require("../middleware/auth");
+const { requirePermission } = require("../middleware/permissions");
 const { webhookLimiter, publicFormLimiter } = require("../middleware/security");
 const { asyncHandler } = require("../utils/asyncHandler");
 const { badRequest, forbidden, notFound } = require("../utils/errors");
@@ -30,9 +32,9 @@ function validate(schema, body) {
 
 // Meta Webhook Verification
 router.get("/webhook", (req, res) => {
-  const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
+  const mode = req.query["hub.mode"] || req.query.hub_mode;
+  const token = req.query["hub.verify_token"] || req.query.hub_verify_token;
+  const challenge = req.query["hub.challenge"] || req.query.hub_challenge;
   if (mode === "subscribe" && token === config.whatsapp.verifyToken) {
     return res.status(200).send(challenge);
   }
@@ -60,10 +62,12 @@ router.post("/webhook", webhookLimiter, asyncHandler(async (req, res) => {
       if (logged.duplicate) return;
       if (message.body) {
         await markMessageAsRead(message.metaMessageId).catch(() => undefined);
-        const reply = await handleIncomingMessage({ phoneE164: message.phoneE164, text: message.body, replyId: message.replyId });
-        if (reply?.kind === "buttons") await sendReplyButtons(message.phoneE164, reply.body, reply.buttons);
-        else if (reply?.kind === "list") await sendInteractiveList(message.phoneE164, reply.body, reply.buttonText, reply.sections);
-        else if (reply?.body) await sendText(message.phoneE164, reply.body);
+        const reply = await handleIncomingMessage({ phoneE164: message.phoneE164, text: message.body, replyId: message.replyId, messageId: message.metaMessageId });
+        if (!reply?.notificationQueued) {
+          if (reply?.kind === "buttons") await sendReplyButtons(message.phoneE164, reply.body, reply.buttons);
+          else if (reply?.kind === "list") await sendInteractiveList(message.phoneE164, reply.body, reply.buttonText, reply.sections);
+          else if (reply?.body) await sendText(message.phoneE164, reply.body);
+        }
       }
     })().catch((error) => console.error("WhatsApp processing failed", { requestId: req.requestId, name: error.name })));
   }
@@ -72,7 +76,7 @@ router.post("/webhook", webhookLimiter, asyncHandler(async (req, res) => {
 }));
 
 // Simulate incoming WhatsApp message from patient interface
-router.post("/simulate-message", publicFormLimiter, asyncHandler(async (req, res) => {
+router.post("/simulate-message", requireAuth, requirePermission("conversations.manage"), publicFormLimiter, asyncHandler(async (req, res) => {
   const input = validate(z.object({
     phone: z.string().min(7).max(40),
     message: z.string().min(1).max(2000),
@@ -88,9 +92,12 @@ router.post("/simulate-message", publicFormLimiter, asyncHandler(async (req, res
       phoneE164,
       patient: patient ? patient._id : null,
       language: input.language || "en",
+      state: "MAIN_MENU",
       lastMessageAt: new Date()
     });
   }
+  session.serviceWindowExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+  await session.save();
 
   // Save incoming message
   const incomingMsg = await WhatsAppMessage.create({
@@ -118,7 +125,8 @@ router.post("/simulate-message", publicFormLimiter, asyncHandler(async (req, res
   const reply = await handleIncomingMessage({
     phoneE164,
     text: input.message,
-    language: input.language || session.language
+    language: input.language || session.language,
+    messageId: String(incomingMsg._id)
   });
 
   // Save AI outgoing message
@@ -128,7 +136,7 @@ router.post("/simulate-message", publicFormLimiter, asyncHandler(async (req, res
     direction: "outgoing",
     senderType: "ai",
     body: reply?.body || reply?.text || "Thank you. Dr. Sohaib's assistant is processing your request.",
-    status: "delivered"
+    status: "queued"
   });
 
   session.lastMessageAt = new Date();
@@ -146,28 +154,31 @@ router.post("/simulate-message", publicFormLimiter, asyncHandler(async (req, res
 }));
 
 // Admin list conversations
-router.get("/conversations", requireAuth, asyncHandler(async (req, res) => {
+router.get("/conversations", requireAuth, requirePermission("conversations.read"), asyncHandler(async (req, res) => {
   const conversations = await ConversationSession.find()
-    .populate("patient takenOverBy")
+    .populate("patient", "patientId fullName phoneE164 preferredLanguage city")
+    .populate("takenOverBy", "name role")
     .sort({ humanRequired: -1, lastMessageAt: -1 })
     .limit(200)
     .lean();
+  await audit({ actorType: "staff", action: "whatsapp_conversations.list_viewed", entityType: "conversation", metadata: { resultCount: conversations.length }, req });
   res.json({ success: true, conversations });
 }));
 
 // Get messages for specific phone
-router.get("/conversations/:phone/messages", requireAuth, asyncHandler(async (req, res) => {
+router.get("/conversations/:phone/messages", requireAuth, requirePermission("conversations.read"), asyncHandler(async (req, res) => {
   const phoneE164 = normalizePhone(req.params.phone) || req.params.phone;
   const messages = await WhatsAppMessage.find({ phoneE164 })
     .populate("senderStaff", "name role")
     .sort({ createdAt: 1 })
     .limit(200)
     .lean();
+  await audit({ actorType: "staff", action: "whatsapp_messages.viewed", entityType: "conversation", entityId: phoneE164, metadata: { resultCount: messages.length }, req });
   res.json({ success: true, messages });
 }));
 
 // Human takeover (Pause AI)
-router.post("/conversations/:phone/takeover", requireAuth, asyncHandler(async (req, res) => {
+router.post("/conversations/:phone/takeover", requireAuth, requirePermission("conversations.manage"), asyncHandler(async (req, res) => {
   const phoneE164 = normalizePhone(req.params.phone) || req.params.phone;
   const session = await ConversationSession.findOneAndUpdate(
     { phoneE164 },
@@ -179,7 +190,7 @@ router.post("/conversations/:phone/takeover", requireAuth, asyncHandler(async (r
 }));
 
 // Reactivate AI
-router.post("/conversations/:phone/reactivate-ai", requireAuth, asyncHandler(async (req, res) => {
+router.post("/conversations/:phone/reactivate-ai", requireAuth, requirePermission("conversations.manage"), asyncHandler(async (req, res) => {
   const phoneE164 = normalizePhone(req.params.phone) || req.params.phone;
   const session = await ConversationSession.findOne({ phoneE164 });
   if (!session) throw notFound("Conversation was not found.");
@@ -192,7 +203,7 @@ router.post("/conversations/:phone/reactivate-ai", requireAuth, asyncHandler(asy
 }));
 
 // Send staff message to patient
-router.post("/conversations/:phone/send", requireAuth, asyncHandler(async (req, res) => {
+router.post("/conversations/:phone/send", requireAuth, requirePermission("conversations.manage"), asyncHandler(async (req, res) => {
   const input = validate(z.object({ message: z.string().min(1).max(4000) }), req.body);
   const phoneE164 = normalizePhone(req.params.phone) || req.params.phone;
   
@@ -206,20 +217,14 @@ router.post("/conversations/:phone/send", requireAuth, asyncHandler(async (req, 
     });
   }
 
-  const outgoingMsg = await WhatsAppMessage.create({
-    phoneE164,
-    conversation: session._id,
-    direction: "outgoing",
-    senderType: "staff",
-    senderStaff: req.user._id,
-    body: input.message,
-    status: "delivered"
-  });
+  const result = await sendStaffMessage(phoneE164, input.message, { senderStaff: req.user._id });
+  const outgoingMsg = result.message;
 
   session.lastMessageAt = new Date();
   await session.save();
 
-  await audit({ actorType: "staff", actorStaff: req.user._id, action: "conversation.staff_message_sent", entityType: "conversation", entityId: phoneE164, req });
+  await audit({ actorType: "staff", actorStaff: req.user._id, action: result.status === "queued" ? "conversation.staff_message_queued" : "conversation.staff_message_failed", entityType: "conversation", entityId: phoneE164, metadata: { failureCode: result.failureCode }, req });
+  if (result.status !== "queued") throw new (require("../utils/errors").AppError)(result.failureCode === "SERVICE_WINDOW_CLOSED" ? 409 : 502, result.failureCode || "WHATSAPP_SEND_FAILED", result.error || "WhatsApp message could not be sent.");
   res.json({ success: true, message: outgoingMsg });
 }));
 

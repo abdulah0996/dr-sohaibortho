@@ -1,144 +1,199 @@
 const express = require("express");
+const { logError } = require("../utils/safeLogger");
+const mongoose = require("mongoose");
+const multer = require("multer");
 const { z } = require("zod");
-const { MedicalReport, Patient, Appointment } = require("../models");
-const { publicFormLimiter } = require("../middleware/security");
+const { MedicalReport } = require("../models");
+const { publicFormLimiter, patientVerificationLimiter } = require("../middleware/security");
+const { requireAuth } = require("../middleware/auth");
+const { requirePermission } = require("../middleware/permissions");
 const { asyncHandler } = require("../utils/asyncHandler");
-const { badRequest, notFound } = require("../utils/errors");
+const { AppError, badRequest, notFound } = require("../utils/errors");
+const { normalizePhone } = require("../utils/security");
+const { audit } = require("../services/auditService");
+const { lookupAppointment } = require("../services/appointmentService");
+const { getMedicalFileStorage } = require("../services/medicalFileStorage");
+const { validateMedicalFile, createReportId, reportDto } = require("../services/medicalFileService");
+const { config } = require("../config/env");
 
 const router = express.Router();
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { files: 1, fileSize: config.storage.maxUploadBytes }
+});
 
-// Upload Medical Report
-router.post("/upload", publicFormLimiter, asyncHandler(async (req, res) => {
-  const schema = z.object({
-    phone: z.string().min(7).max(40),
-    reportTitle: z.string().min(2).max(200),
-    appointmentId: z.string().optional().or(z.literal("")),
-    tokenNumber: z.string().optional().or(z.literal("")),
-    documentType: z.enum(["mri", "xray", "prescription", "lab", "discharge", "other", "blood_test"]).optional(),
-    fileUrl: z.string().optional().or(z.literal("")),
-    fileName: z.string().min(1),
-    fileType: z.string().optional().or(z.literal("")),
-    fileSize: z.number().optional(),
-    notes: z.string().max(1000).optional().or(z.literal(""))
+function multipartUpload(req, res, next) {
+  upload.single("reportFile")(req, res, (error) => {
+    if (!error) return next();
+    if (error instanceof multer.MulterError && error.code === "LIMIT_FILE_SIZE") {
+      return next(badRequest("The medical document exceeds the configured upload limit."));
+    }
+    return next(badRequest("The medical document upload could not be accepted."));
   });
+}
 
-  const parsed = schema.safeParse(req.body);
+function reportConditions(id) {
+  const conditions = [{ reportId: id }];
+  if (mongoose.Types.ObjectId.isValid(id)) conditions.push({ _id: id });
+  return conditions;
+}
+
+const uploadFieldsSchema = z.object({
+  phone: z.string().min(7).max(40),
+  reportTitle: z.string().min(2).max(200),
+  appointmentId: z.string().min(3).max(50),
+  documentType: z.enum(["mri", "xray", "prescription", "lab", "discharge", "other", "blood_test"]).optional(),
+  notes: z.string().max(1000).optional().or(z.literal(""))
+}).strict();
+
+router.post("/upload", publicFormLimiter, patientVerificationLimiter, multipartUpload, asyncHandler(async (req, res) => {
+  const parsed = uploadFieldsSchema.safeParse(req.body);
   if (!parsed.success) throw badRequest("Invalid report upload data.", parsed.error.flatten());
   const input = parsed.data;
+  const phoneE164 = normalizePhone(input.phone);
+  if (!phoneE164) throw badRequest("Invalid report upload data.");
 
-  const phoneE164 = input.phone.startsWith("+") ? input.phone : `+${input.phone}`;
-  let patient = await Patient.findOne({ phoneE164 });
-  if (!patient) {
-    patient = await Patient.create({
-      patientId: `PAT-${Date.now().toString().slice(-6)}`,
-      fullName: "Patient (" + input.phone + ")",
-      phoneE164
+  const fileMetadata = validateMedicalFile(req.file);
+  const appt = await lookupAppointment({ reference: input.appointmentId, phone: phoneE164 });
+  const patient = appt.patient;
+  const storage = getMedicalFileStorage();
+  let stored = false;
+  let report;
+  try {
+    await storage.putObject({ key: fileMetadata.storageKey, body: req.file.buffer, contentType: fileMetadata.mimeType });
+    stored = true;
+    report = await MedicalReport.create({
+      reportId: createReportId(),
+      patient: patient._id || patient,
+      patientPhone: phoneE164,
+      appointmentId: appt.appointmentId,
+      tokenNumber: appt.tokenNumber,
+      appointment: appt._id,
+      reportTitle: input.reportTitle,
+      documentType: input.documentType || "other",
+      ...fileMetadata,
+      uploadedByType: "patient",
+      uploadedAt: new Date(),
+      fileStatus: "active",
+      notes: input.notes || "",
+      status: "New"
     });
-  }
-
-  let appointmentRef = null;
-  let linkedToken = input.tokenNumber || "";
-
-  // Auto link to appointment if appointmentId or token is passed or if patient has an active appointment
-  let appt = null;
-  if (input.appointmentId) {
-    const mongoose = require("mongoose");
-    const orConds = [{ appointmentId: input.appointmentId }, { tokenNumber: input.appointmentId }];
-    if (mongoose.Types.ObjectId.isValid(input.appointmentId)) {
-      orConds.push({ _id: input.appointmentId });
+  } catch (error) {
+    if (stored) {
+      try { await storage.deleteObject({ key: fileMetadata.storageKey }); }
+      catch (cleanupError) { logError("Private upload cleanup failed", cleanupError); }
     }
-    appt = await Appointment.findOne({ $or: orConds });
-  }
-  if (!appt) {
-    appt = await Appointment.findOne({ phoneE164 }).sort({ createdAt: -1 });
+    throw new AppError(503, "PRIVATE_STORAGE_UNAVAILABLE", "The medical document could not be stored securely. Please try again later.");
   }
 
-  if (appt) {
-    appointmentRef = appt._id;
-    input.appointmentId = appt.appointmentId;
-    linkedToken = appt.tokenNumber;
-
-    if (patient && (patient.fullName.startsWith("Patient (") || !patient.fullName) && appt.patientSnapshot?.fullName) {
-      patient.fullName = appt.patientSnapshot.fullName;
-      await patient.save().catch(() => {});
-    }
-  }
-
-  const reportId = `RPT-${Date.now().toString().slice(-6)}`;
-  const report = await MedicalReport.create({
-    reportId,
-    patient: patient._id,
-    patientPhone: phoneE164,
-    appointmentId: input.appointmentId || "",
-    tokenNumber: linkedToken,
-    appointment: appointmentRef,
-    reportTitle: input.reportTitle,
-    documentType: input.documentType || "other",
-    fileUrl: input.fileUrl || `/uploads/${Date.now()}_${input.fileName}`,
-    fileName: input.fileName,
-    fileType: input.fileType || "application/pdf",
-    fileSize: input.fileSize || 1024000,
-    notes: input.notes || "",
-    status: "New"
-  });
-
+  await audit({ actorType: "patient", actorPatient: patient._id || patient, actorPhone: phoneE164, action: "report.uploaded", entityType: "report", entityId: String(report._id), metadata: { mimeType: report.mimeType, fileSize: report.fileSize }, req });
+  const responseReport = reportDto(report);
+  delete responseReport.patient;
+  delete responseReport.patientPhone;
+  delete responseReport.appointment;
+  delete responseReport.notes;
   res.status(201).json({
     success: true,
-    report,
+    report: responseReport,
     message: "Your medical document has been uploaded successfully and linked with your record."
   });
 }));
 
-// GET /api/reports - List Reports
-router.get("/", asyncHandler(async (req, res) => {
-  const filter = {};
-  if (req.query.status) filter.status = req.query.status;
-  if (req.query.phone) filter.patientPhone = req.query.phone.startsWith("+") ? req.query.phone : `+${req.query.phone}`;
-  const reports = await MedicalReport.find(filter)
-    .populate("patient appointment reviewedBy")
-    .sort({ createdAt: -1 })
-    .lean();
-  res.json({ success: true, reports });
-}));
+router.use(requireAuth);
 
-// GET /api/reports/appointment/:appointmentId
-router.get("/appointment/:appointmentId", asyncHandler(async (req, res) => {
-  const reports = await MedicalReport.find({ appointmentId: req.params.appointmentId })
-    .populate("patient appointment reviewedBy")
-    .sort({ createdAt: -1 })
-    .lean();
-  res.json({ success: true, reports });
-}));
-
-// GET /api/reports/:id
-router.get("/:id", asyncHandler(async (req, res) => {
-  const report = await MedicalReport.findOne({
-    $or: [{ _id: req.params.id }, { reportId: req.params.id }]
-  }).populate("patient appointment reviewedBy").lean();
-
-  if (!report) throw notFound("Medical report not found");
-  res.json({ success: true, report });
-}));
-
-// PUT or PATCH /api/reports/:id/status
-const updateStatusHandler = asyncHandler(async (req, res) => {
-  const { status } = req.body;
-  const report = await MedicalReport.findOne({
-    $or: [{ _id: req.params.id }, { reportId: req.params.id }]
-  });
-  if (!report) throw notFound("Report not found");
-
-  if (status) report.status = status;
-  if (req.user) {
-    report.reviewedBy = req.user._id;
-    report.reviewedAt = new Date();
+router.get("/", requirePermission("reports.read"), asyncHandler(async (req, res) => {
+  const filter = { fileStatus: { $ne: "deleted" } };
+  const allowedStatuses = new Set(["New", "Uploaded", "Received", "Under Review", "Reviewed", "More Information Required", "pending", "archived"]);
+  if (allowedStatuses.has(req.query.status)) filter.status = req.query.status;
+  if (req.query.phone) {
+    const phone = normalizePhone(String(req.query.phone).slice(0, 40));
+    if (phone) filter.patientPhone = phone;
   }
-  await report.save();
+  const limit = Math.max(1, Math.min(Number(req.query.limit) || 50, 100));
+  const page = Math.max(1, Number(req.query.page) || 1);
+  const reports = await MedicalReport.find(filter).select("-storageKey -fileUrl")
+    .populate("patient", "patientId fullName phoneE164 preferredLanguage city")
+    .populate("appointment", "appointmentId tokenNumber date time status")
+    .populate("reviewedBy", "name role").sort({ createdAt: -1 })
+    .skip((page - 1) * limit).limit(limit).lean();
+  await audit({ actorType: "staff", action: "reports.list_viewed", entityType: "report", metadata: { resultCount: reports.length }, req });
+  res.json({ success: true, reports: reports.map(reportDto) });
+}));
 
-  res.json({ success: true, report, message: "Report status updated successfully." });
+router.get("/appointment/:appointmentId", requirePermission("reports.read"), asyncHandler(async (req, res) => {
+  const limit = Math.max(1, Math.min(Number(req.query.limit) || 50, 100));
+  const reports = await MedicalReport.find({ appointmentId: req.params.appointmentId, fileStatus: { $ne: "deleted" } }).select("-storageKey -fileUrl")
+    .populate("patient", "patientId fullName phoneE164 preferredLanguage city")
+    .populate("appointment", "appointmentId tokenNumber date time status")
+    .populate("reviewedBy", "name role").sort({ createdAt: -1 }).limit(limit).lean();
+  await audit({ actorType: "staff", action: "appointment.reports_viewed", entityType: "appointment", entityId: req.params.appointmentId, metadata: { resultCount: reports.length }, req });
+  res.json({ success: true, reports: reports.map(reportDto) });
+}));
+
+router.get("/:id/download", requirePermission("reports.download"), asyncHandler(async (req, res) => {
+  const report = await MedicalReport.findOne({ $or: reportConditions(req.params.id), fileStatus: "active" }).select("+storageKey");
+  if (!report?.storageKey) throw notFound("Medical report not found");
+  let stream;
+  try { stream = await getMedicalFileStorage().getObject({ key: report.storageKey }); }
+  catch { throw notFound("Medical report not found"); }
+  await audit({ actorType: "staff", action: "report.downloaded", entityType: "report", entityId: String(report._id), metadata: { fileSize: report.fileSize, mimeType: report.mimeType }, req });
+  const safeAsciiName = report.originalFilename.replace(/[^a-zA-Z0-9._-]/g, "_");
+  res.set({
+    "Content-Type": report.mimeType,
+    "Content-Length": String(report.fileSize),
+    "Content-Disposition": `attachment; filename="${safeAsciiName}"; filename*=UTF-8''${encodeURIComponent(report.originalFilename)}`,
+    "Cache-Control": "private, no-store, max-age=0",
+    "X-Content-Type-Options": "nosniff"
+  });
+  stream.on?.("error", () => res.destroy());
+  stream.pipe(res);
+}));
+
+router.delete("/:id", requirePermission("reports.delete"), asyncHandler(async (req, res) => {
+  const report = await MedicalReport.findOne({ $or: reportConditions(req.params.id), fileStatus: { $in: ["active", "deleting"] } }).select("+storageKey");
+  if (!report?.storageKey) throw notFound("Medical report not found");
+  report.fileStatus = "deleting";
+  await report.save();
+  try { await getMedicalFileStorage().deleteObject({ key: report.storageKey }); }
+  catch (error) {
+    report.fileStatus = "active";
+    await report.save();
+    throw new AppError(503, "PRIVATE_STORAGE_UNAVAILABLE", "The medical document could not be deleted securely. Please try again later.");
+  }
+  report.fileStatus = "deleted";
+  report.status = "archived";
+  report.deletedAt = new Date();
+  report.deletedBy = req.user._id;
+  report.storageKey = undefined;
+  await report.save({ validateBeforeSave: false });
+  await audit({ actorType: "staff", action: "report.deleted", entityType: "report", entityId: String(report._id), req });
+  res.json({ success: true, message: "Medical report deleted securely." });
+}));
+
+router.get("/:id", requirePermission("reports.read"), asyncHandler(async (req, res) => {
+  const report = await MedicalReport.findOne({ $or: reportConditions(req.params.id), fileStatus: { $ne: "deleted" } }).select("-storageKey -fileUrl")
+    .populate("patient", "patientId fullName phoneE164 preferredLanguage city")
+    .populate("appointment", "appointmentId tokenNumber date time status")
+    .populate("reviewedBy", "name role").lean();
+  if (!report) throw notFound("Medical report not found");
+  await audit({ actorType: "staff", action: "report.viewed", entityType: "report", entityId: String(report._id), req });
+  res.json({ success: true, report: reportDto(report) });
+}));
+
+const updateStatusHandler = asyncHandler(async (req, res) => {
+  const parsed = z.object({ status: z.enum(["New", "Uploaded", "Received", "Under Review", "Reviewed", "More Information Required", "pending", "archived"]) }).strict().safeParse(req.body);
+  if (!parsed.success) throw badRequest("Invalid report status.");
+  const report = await MedicalReport.findOne({ $or: reportConditions(req.params.id), fileStatus: "active" });
+  if (!report) throw notFound("Report not found");
+  report.status = parsed.data.status;
+  report.reviewedBy = req.user._id;
+  report.reviewedAt = new Date();
+  await report.save();
+  await audit({ actorType: "staff", action: "report.status_updated", entityType: "report", entityId: String(report._id), metadata: { status: report.status }, req });
+  res.json({ success: true, report: reportDto(report), message: "Report status updated successfully." });
 });
 
-router.put("/:id/status", updateStatusHandler);
-router.patch("/:id/status", updateStatusHandler);
+router.put("/:id/status", requirePermission("reports.review"), updateStatusHandler);
+router.patch("/:id/status", requirePermission("reports.review"), updateStatusHandler);
 
 module.exports = router;

@@ -1,8 +1,6 @@
 const express = require("express");
 const { z } = require("zod");
 const {
-  setupRequired,
-  setupSuperAdmin,
   login,
   refresh,
   logout,
@@ -12,8 +10,10 @@ const {
   updateStaffUser
 } = require("../services/authService");
 const { audit } = require("../services/auditService");
-const { requireAuth, requireRole } = require("../middleware/auth");
+const { requireAuth } = require("../middleware/auth");
+const { requirePermission } = require("../middleware/permissions");
 const { authLimiter } = require("../middleware/security");
+const { requireObjectIdParam } = require("../middleware/validation");
 const { asyncHandler } = require("../utils/asyncHandler");
 const { badRequest } = require("../utils/errors");
 
@@ -32,24 +32,25 @@ const staffSchema = z.object({
   role: z.enum(["super_admin", "doctor", "receptionist", "clinic_staff"]).optional()
 });
 
-router.get("/setup-status", asyncHandler(async (req, res) => {
-  res.json({ success: true, setupRequired: await setupRequired() });
-}));
-
-router.post("/setup", authLimiter, asyncHandler(async (req, res) => {
-  const input = validate(staffSchema.omit({ role: true }), req.body);
-  const user = await setupSuperAdmin(input);
-  await audit({ actorType: "system", action: "staff.super_admin_setup", entityType: "staff", entityId: user._id.toString(), req });
-  res.status(201).json({ success: true, user: publicStaffUser(user) });
-}));
-
 router.post("/login", authLimiter, asyncHandler(async (req, res) => {
   const input = validate(z.object({
     email: z.string().email(),
     password: z.string().min(1)
   }), req.body);
-  const result = await login(input, req, res);
-  await audit({ actorType: "staff", actorStaff: result.user.id, action: "staff.login", entityType: "staff", entityId: String(result.user.id), req });
+  let result;
+  try {
+    result = await login(input, req, res);
+  } catch (error) {
+    await audit({
+      actorType: "system",
+      action: error.code === "FORBIDDEN" ? "staff.login_locked" : "staff.login_failed",
+      entityType: "staff",
+      metadata: { outcome: "denied" },
+      req
+    });
+    throw error;
+  }
+  await audit({ actorType: "staff", actorStaff: result.user.id, actorRole: result.user.role, action: "staff.login", entityType: "staff", entityId: String(result.user.id), req });
   res.json({ success: true, ...result });
 }));
 
@@ -67,18 +68,20 @@ router.get("/me", requireAuth, asyncHandler(async (req, res) => {
   res.json({ success: true, user: publicStaffUser(req.user) });
 }));
 
-router.get("/users", requireAuth, requireRole("super_admin"), asyncHandler(async (req, res) => {
-  res.json({ success: true, users: await listStaffUsers() });
+router.get("/users", requireAuth, requirePermission("users.manage"), asyncHandler(async (req, res) => {
+  const users = await listStaffUsers();
+  await audit({ actorType: "staff", action: "staff.list_viewed", entityType: "staff", metadata: { resultCount: users.length }, req });
+  res.json({ success: true, users });
 }));
 
-router.post("/users", requireAuth, requireRole("super_admin"), asyncHandler(async (req, res) => {
+router.post("/users", requireAuth, requirePermission("users.manage"), asyncHandler(async (req, res) => {
   const input = validate(staffSchema, req.body);
   const user = await createStaffUser(input);
   await audit({ actorType: "staff", actorStaff: req.user._id, action: "staff.created", entityType: "staff", entityId: user._id.toString(), req });
   res.status(201).json({ success: true, user: publicStaffUser(user) });
 }));
 
-router.patch("/users/:id", requireAuth, requireRole("super_admin"), asyncHandler(async (req, res) => {
+router.patch("/users/:id", requireAuth, requirePermission("users.manage"), requireObjectIdParam("id", "Staff user was not found."), asyncHandler(async (req, res) => {
   const input = validate(z.object({
     name: z.string().min(2).max(120).optional(),
     role: z.enum(["super_admin", "doctor", "receptionist", "clinic_staff"]).optional(),

@@ -1,31 +1,19 @@
 services:
   app:
     build: .
-    depends_on:
-      mongo:
-        condition: service_healthy
     ports:
-      - "3000:3000"
+      - "127.0.0.1:${APP_PORT:-3000}:3000"
     env_file:
       - .env
     environment:
-      MONGODB_URI: mongodb://mongo:27017/dr-shoaib-whatsapp-chatbot?replicaSet=rs0&directConnection=true
+      NODE_ENV: production
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
 
-  mongo:
-    image: mongo:7
-    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
-    ports:
-      - "27017:27017"
-    volumes:
-      - mongo-data:/data/db
-    healthcheck:
-      test: ["CMD-SHELL", "mongosh --quiet --eval 'try { rs.status().ok } catch (error) { rs.initiate({_id:\"rs0\",members:[{_id:0,host:\"mongo:27017\"}]}).ok }' | grep 1"]
-      interval: 5s
-      timeout: 10s
-      retries: 20
-      start_period: 10s
-    restart: unless-stopped
-
-volumes:
-  mongo-data:
+# Production MongoDB is external and authenticated through MONGODB_URI.
+# No database service or port is published by this compose file.

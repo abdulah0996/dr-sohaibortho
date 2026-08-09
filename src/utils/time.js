@@ -132,6 +132,11 @@ function validateSlotAgainstSchedule({ settings, date, time, now = nowInClinicZo
     return { ok: false, reason: "Past dates and expired time slots cannot be booked." };
   }
 
+  const sameDayCutoffMinutes = Number(settings.sameDayBookingCutoffMinutes || 0);
+  if (dateTime.hasSame(now, "day") && dateTime < now.plus({ minutes: sameDayCutoffMinutes })) {
+    return { ok: false, reason: "The same-day booking cutoff has passed for this time slot." };
+  }
+
   const daySchedule = getDaySchedule(settings, date);
   if (!daySchedule || !daySchedule.isOpen) {
     return { ok: false, reason: "The selected clinic is closed on that date." };
@@ -140,8 +145,12 @@ function validateSlotAgainstSchedule({ settings, date, time, now = nowInClinicZo
   const selected = minutesFromTime(time);
   const start = minutesFromTime(daySchedule.start);
   const end = minutesFromTime(daySchedule.end);
-  if (selected < start || selected > end) {
+  if (selected < start || selected >= end) {
     return { ok: false, reason: "The selected time is outside this clinic's opening hours." };
+  }
+  const duration = Number(settings.slotDurationMinutes || 15);
+  if (!Number.isFinite(duration) || duration <= 0 || (selected - start) % duration !== 0) {
+    return { ok: false, reason: "The selected time is not a valid appointment slot." };
   }
 
   return { ok: true };
@@ -156,7 +165,7 @@ function generateScheduleSlots(settings, date) {
   const end = minutesFromTime(daySchedule.end);
   const slots = [];
 
-  for (let minute = start; minute <= end; minute += duration) {
+  for (let minute = start; minute < end; minute += duration) {
     slots.push(timeFromMinutes(minute));
   }
 

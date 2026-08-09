@@ -21,7 +21,9 @@ function normalizePhone(input) {
   if (value.startsWith("00")) value = `+${value.slice(2)}`;
   if (value.startsWith("0")) value = `+92${value.slice(1)}`;
   if (!value.startsWith("+")) value = `+${value}`;
-  return value;
+  const digits = value.replace(/\D/g, "");
+  if (digits.length < 8 || digits.length > 15) return "";
+  return `+${digits}`;
 }
 
 function safePublicAppointment(appointment) {
@@ -43,10 +45,10 @@ function safePublicAppointment(appointment) {
       address: appointment.locationSnapshot.address,
       contactNumber: appointment.locationSnapshot.contactNumber
     } : {
-      name: "Iqbal Hospital",
-      city: "Bahawalpur",
-      address: "Noor Mahal Road, Bahawalpur",
-      contactNumber: "+92 300 1234567"
+      name: "Configured clinic",
+      city: "",
+      address: "",
+      contactNumber: ""
     }
   };
 }

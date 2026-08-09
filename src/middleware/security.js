@@ -27,6 +27,17 @@ const publicFormLimiter = rateLimit({
   legacyHeaders: false
 });
 
+const patientVerificationLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 15,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: { code: "RATE_LIMITED", message: "Too many verification attempts. Please try again later." }
+  }
+});
+
 const webhookLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 900,
@@ -44,4 +55,4 @@ function strictOrigin(req, res, next) {
   return next(forbidden("Request origin is not allowed"));
 }
 
-module.exports = { apiLimiter, authLimiter, publicFormLimiter, webhookLimiter, strictOrigin };
+module.exports = { apiLimiter, authLimiter, publicFormLimiter, patientVerificationLimiter, webhookLimiter, strictOrigin };

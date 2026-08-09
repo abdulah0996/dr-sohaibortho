@@ -1,6 +1,6 @@
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-const { StaffUser, RefreshTokenSession } = require("../models");
+const { StaffUser, RefreshTokenSession, Counter } = require("../models");
 const { config } = require("../config/env");
 const { badRequest, conflict, forbidden, unauthorized, notFound } = require("../utils/errors");
 const { randomToken, sha256 } = require("../utils/security");
@@ -8,6 +8,16 @@ const { refreshCookieName } = require("../middleware/auth");
 
 const lockoutAttempts = 5;
 const lockoutMinutes = 15;
+const demoAccountEmails = new Set([
+  "admin@drsohaibdemo.com",
+  "doctor@drsohaibdemo.com",
+  "reception@drsohaibdemo.com",
+  "staff@drsohaibdemo.com"
+]);
+
+function isDemoAccountEmail(email) {
+  return demoAccountEmails.has(String(email || "").trim().toLowerCase());
+}
 
 function validatePassword(password) {
   const value = String(password || "");
@@ -16,6 +26,14 @@ function validatePassword(password) {
   if (!/[a-z]/.test(value)) return "Password must include a lowercase letter.";
   if (!/\d/.test(value)) return "Password must include a number.";
   if (!/[^A-Za-z0-9]/.test(value)) return "Password must include a symbol.";
+  if (/\s/.test(value)) return "Password must not contain whitespace.";
+  return "";
+}
+
+function validateBootstrapPassword(password) {
+  const baseError = validatePassword(password);
+  if (baseError) return baseError;
+  if (/(password|admin|doctor|welcome|qwerty)/i.test(String(password))) return "Password contains a commonly guessed word.";
   return "";
 }
 
@@ -34,8 +52,21 @@ async function createStaffUser({ name, email, password, role = "receptionist" })
 }
 
 async function setupSuperAdmin(input) {
+  const passwordError = validateBootstrapPassword(input.password);
+  if (passwordError) throw badRequest(passwordError);
   if (!(await setupRequired())) throw conflict("Super Admin has already been configured.");
-  return createStaffUser({ ...input, role: "super_admin" });
+  try {
+    await Counter.create({ key: "bootstrap:super-admin", seq: 1 });
+  } catch (error) {
+    if (error.code === 11000) throw conflict("Super Admin bootstrap has already been used.");
+    throw error;
+  }
+  try {
+    return await createStaffUser({ ...input, role: "super_admin" });
+  } catch (error) {
+    await Counter.deleteOne({ key: "bootstrap:super-admin" }).catch(() => undefined);
+    throw error;
+  }
 }
 
 function signAccessToken(user) {
@@ -81,6 +112,9 @@ function clearRefreshCookie(res) {
 }
 
 async function login({ email, password }, req, res) {
+  if (config.isProduction && isDemoAccountEmail(email)) {
+    throw unauthorized("Invalid email or password.");
+  }
   const user = await StaffUser.findOne({ email: String(email || "").toLowerCase() }).select("+passwordHash");
   if (!user || !user.isActive) throw unauthorized("Invalid email or password.");
 
@@ -167,6 +201,7 @@ async function updateStaffUser(id, input) {
 
 module.exports = {
   validatePassword,
+  validateBootstrapPassword,
   setupRequired,
   setupSuperAdmin,
   createStaffUser,
@@ -175,5 +210,8 @@ module.exports = {
   logout,
   publicStaffUser,
   listStaffUsers,
-  updateStaffUser
+  updateStaffUser,
+  isDemoAccountEmail,
+  setRefreshCookie,
+  clearRefreshCookie
 };

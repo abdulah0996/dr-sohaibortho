@@ -1,9 +1,15 @@
 node_modules
 .git
-.env
+.env*
+!.env.example
 production-dr-khurrum
 coverage
 tests
+docs
+scripts
+.github
+README.md
+*.md
 *.log
 docker_logs.txt
 docker_status.txt

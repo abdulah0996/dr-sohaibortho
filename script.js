@@ -6,7 +6,7 @@
     lang: "en", // "en" or "ur"
     currentPath: window.location.hash ? window.location.hash.replace("#", "") : (window.location.pathname || "/"),
     user: null,
-    activePhone: "+923001234567",
+    activePhone: "",
     chatMessages: [],
     showMainMenuCard: false,
     currentFlow: "idle",
@@ -20,8 +20,10 @@
       date: "",
       dateLabel: "",
       time: "",
-      timeLabel: ""
+      timeLabel: "",
+      consentGiven: false
     },
+    consentPolicy: null,
     uploadReportState: {
       documentType: "other",
       typeLabel: "Medical Document"
@@ -30,6 +32,8 @@
     conversationMode: "AI", // "AI" | "HUMAN"
     humanHandoverActive: false,
     adminTab: "dashboard",
+    dashboardLocationId: "BWP",
+    dashboardDate: "",
     calendarView: "month"
   };
 
@@ -109,6 +113,57 @@
     }
   }
 
+  function dateLabel(date) {
+    const parsed = new Date(`${date}T12:00:00`);
+    return Number.isNaN(parsed.getTime()) ? date : new Intl.DateTimeFormat("en-GB", { weekday: "short", day: "numeric", month: "short" }).format(parsed);
+  }
+
+  function timeLabel(time) {
+    const match = /^(\d{2}):(\d{2})$/.exec(time || "");
+    if (!match) return time;
+    const hour = Number(match[1]);
+    return `${hour % 12 || 12}:${match[2]} ${hour >= 12 ? "PM" : "AM"}`;
+  }
+
+  function loadAvailableDates(actionPrefix, title) {
+    pushMessage({ sender: "ai", text: "Checking the clinic schedule for available dates...", time: "Now" });
+    renderChatView();
+    api.dates(state.bookingState.locationId || "BWP").then((response) => {
+      const dates = (response.dates || []).slice(0, 12);
+      pushMessage({
+        sender: "ai", title,
+        text: dates.length ? "Please select an available date:" : "No appointment dates are currently available. Please contact clinic staff.",
+        quickReplies: dates.map((entry) => ({ label: dateLabel(entry.date), action: `${actionPrefix}_date_${entry.date}_${dateLabel(entry.date)}` })),
+        time: "Now"
+      });
+      renderChatView();
+    }).catch((error) => {
+      showToast(error.message);
+      pushMessage({ sender: "ai", text: "Availability could not be loaded. Please try again or contact clinic staff.", time: "Now" });
+      renderChatView();
+    });
+  }
+
+  function loadAvailableTimes(actionPrefix, date) {
+    pushMessage({ sender: "ai", text: "Checking available appointment times...", time: "Now" });
+    renderChatView();
+    api.slots(state.bookingState.locationId || "BWP", date).then((response) => {
+      const slots = (response.slots || []).filter((slot) => slot.available);
+      pushMessage({
+        sender: "ai",
+        title: actionPrefix === "reschedule" ? "Select New Time Slot" : "Select Appointment Time",
+        text: slots.length ? "Please select an available appointment time:" : "No times remain available on this date. Please select another date.",
+        quickReplies: slots.map((slot) => ({ label: timeLabel(slot.time), action: `${actionPrefix}_time_${slot.time}_${timeLabel(slot.time)}` })),
+        time: "Now"
+      });
+      renderChatView();
+    }).catch((error) => {
+      showToast(error.message);
+      pushMessage({ sender: "ai", text: "Available times could not be loaded. Please select another date or contact clinic staff.", time: "Now" });
+      renderChatView();
+    });
+  }
+
   // ----------------------------------------------------
   // CHATBOT ACTION HANDLER & STATE MACHINE
   // ----------------------------------------------------
@@ -185,18 +240,8 @@
         if (options.isChanging) { showBookingReview(); break; }
 
         state.currentStep = "booking_date";
-        pushMessage({
-          sender: "ai",
-          title: "📅 Select Consultation Date",
-          text: "Please select your preferred online consultation date:",
-          quickReplies: [
-            { label: "Mon, 3 Aug", action: "booking_date_2026-08-03_Mon, 3 Aug" },
-            { label: "Tue, 4 Aug", action: "booking_date_2026-08-04_Tue, 4 Aug" },
-            { label: "Wed, 5 Aug", action: "booking_date_2026-08-05_Wed, 5 Aug" },
-            { label: "Thu, 6 Aug", action: "booking_date_2026-08-06_Thu, 6 Aug" }
-          ],
-          time: "Now"
-        });
+        state.bookingState.locationId = "BWP";
+        loadAvailableDates("booking", "Select Consultation Date");
         break;
 
       case "booking_city_bwp":
@@ -210,18 +255,7 @@
           break;
         }
 
-        pushMessage({
-          sender: "ai",
-          title: "📅 Select Appointment Date",
-          text: "Great. Please select your preferred appointment date:",
-          quickReplies: [
-            { label: "Mon, 3 Aug", action: "booking_date_2026-08-03_Mon, 3 Aug" },
-            { label: "Tue, 4 Aug", action: "booking_date_2026-08-04_Tue, 4 Aug" },
-            { label: "Wed, 5 Aug", action: "booking_date_2026-08-05_Wed, 5 Aug" },
-            { label: "Thu, 6 Aug", action: "booking_date_2026-08-06_Thu, 6 Aug" }
-          ],
-          time: "Now"
-        });
+        loadAvailableDates("booking", "Select Appointment Date");
         break;
 
       case "booking_city_bwn":
@@ -280,38 +314,12 @@
 
       case "change_date":
         state.currentStep = "booking_date";
-        pushMessage({
-          sender: "ai",
-          title: "📅 Change Date",
-          text: "Please select your preferred appointment date:",
-          quickReplies: [
-            { label: "Mon, 3 Aug", action: "booking_date_2026-08-03_Mon, 3 Aug" },
-            { label: "Tue, 4 Aug", action: "booking_date_2026-08-04_Tue, 4 Aug" },
-            { label: "Wed, 5 Aug", action: "booking_date_2026-08-05_Wed, 5 Aug" },
-            { label: "Thu, 6 Aug", action: "booking_date_2026-08-06_Thu, 6 Aug" }
-          ],
-          time: "Now"
-        });
+        loadAvailableDates("booking", "Change Date");
         break;
 
       case "change_time":
         state.currentStep = "booking_time";
-        pushMessage({
-          sender: "ai",
-          title: "🕒 Change Time",
-          text: "Please select an available appointment time:",
-          quickReplies: [
-            { label: "4:30 PM", action: "booking_time_16:30_4:30 PM" },
-            { label: "5:00 PM", action: "booking_time_17:00_5:00 PM" },
-            { label: "5:30 PM", action: "booking_time_17:30_5:30 PM" },
-            { label: "6:00 PM", action: "booking_time_18:00_6:00 PM" },
-            { label: "6:30 PM", action: "booking_time_18:30_6:30 PM" },
-            { label: "7:00 PM", action: "booking_time_19:00_7:00 PM" },
-            { label: "7:30 PM", action: "booking_time_19:30_7:30 PM" },
-            { label: "8:00 PM", action: "booking_time_20:00_8:00 PM" }
-          ],
-          time: "Now"
-        });
+        loadAvailableTimes("booking", state.bookingState.date);
         break;
 
       case "change_booking_menu":
@@ -368,7 +376,14 @@
         break;
 
       case "confirm_booking_final":
-        pushMessage({ sender: "user", text: "✅ Confirm Appointment", time: "Now" });
+        if (!state.consentPolicy) {
+          showToast("Please wait while the current consent statement loads.");
+          showBookingReview();
+          break;
+        }
+        const submittedConsent = true; // The patient actively selected the consent-labelled action.
+        state.bookingState.idempotencyKey ||= (globalThis.crypto?.randomUUID?.() || `web-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+        pushMessage({ sender: "user", text: "✅ I Consent & Confirm Appointment", time: "Now" });
         api.book({
           fullName: state.bookingState.patientName,
           phone: state.bookingState.phoneNumber || state.activePhone,
@@ -376,8 +391,10 @@
           date: state.bookingState.date,
           time: state.bookingState.time,
           locationId: state.bookingState.locationId || "BWP",
-          reason: "General Consultation"
-        }).then(res => {
+          reason: "General Consultation",
+          consentGiven: submittedConsent,
+          consentTextVersion: state.consentPolicy.version
+        }, state.bookingState.idempotencyKey).then(res => {
           const appt = res.appointment;
           state.managedAppointment = appt;
           const isOnline = state.bookingState.appointmentType === "online";
@@ -385,7 +402,7 @@
           pushMessage({
             sender: "ai",
             title: "✅ Appointment Confirmed",
-            text: `Your appointment with Dr. Sohaib has been booked successfully.\n\n👤 Patient: ${state.bookingState.patientName}\n📞 Phone: ${state.bookingState.phoneNumber || state.activePhone}\n${isOnline ? '💻 Appointment Type: Online Appointment' : '🏥 Appointment Type: In-Person'}\n\n${isOnline ? '' : '📍 Iqbal Hospital\nNoor Mahal Road, Bahawalpur\n\n'}📅 ${state.bookingState.dateLabel || appt.date}\n🕓 ${state.bookingState.timeLabel || appt.time}\n\n🎫 Token Number: ${appt.tokenNumber}\n\nPlease arrive a little before your appointment time.`,
+            text: `Your appointment with Dr. Sohaib has been booked successfully.\n\n👤 Patient: ${state.bookingState.patientName}\n📞 Phone: ${state.bookingState.phoneNumber || state.activePhone}\n${isOnline ? '💻 Appointment Type: Online Appointment' : `🏥 Appointment Type: In-Person\n📍 ${appt.clinic?.name || 'Configured clinic'}\n${appt.clinic?.address || ''}`}\n\n📅 ${state.bookingState.dateLabel || appt.date}\n🕓 ${state.bookingState.timeLabel || appt.time}\n\n🎫 Token Number: ${appt.tokenNumber}\n\nPlease arrive a little before your appointment time.`,
             quickReplies: [
               { label: "📋 View Appointment", action: "manage_booking" },
               { label: "🏠 Main Menu", action: "show_main_menu" }
@@ -409,6 +426,27 @@
           });
           renderChatView();
         });
+        break;
+
+      case "decline_booking_consent":
+        if (!state.consentPolicy) {
+          showBookingReview();
+          break;
+        }
+        api.recordConsentDecision({
+          fullName: state.bookingState.patientName,
+          phone: state.bookingState.phoneNumber || state.activePhone,
+          preferredLanguage: state.lang,
+          consentGiven: false,
+          consentTextVersion: state.consentPolicy.version
+        }).then(() => {
+          pushMessage({ sender: "user", text: "I do not consent", time: "Now" });
+          pushMessage({ sender: "ai", text: "No appointment was created because consent was declined.", time: "Now" });
+          state.currentFlow = "idle";
+          state.currentStep = "main_menu";
+          state.showMainMenuCard = true;
+          renderChatView();
+        }).catch((error) => showToast(error.message));
         break;
 
       case "manage_booking":
@@ -436,7 +474,7 @@
       case "action_confirm_appt":
         if (!state.managedAppointment) break;
         pushMessage({ sender: "user", text: "✅ Confirm Appointment", time: "Now" });
-        api.confirmAppointment(state.managedAppointment.appointmentId || state.managedAppointment._id)
+        api.confirmAppointment(state.managedAppointment.appointmentId || state.managedAppointment._id, { phone: state.activePhone })
           .then(res => {
             state.managedAppointment.status = "confirmed";
             pushMessage({
@@ -460,19 +498,9 @@
       case "action_reschedule_appt":
         if (!state.managedAppointment) break;
         state.currentFlow = "reschedule";
-        pushMessage({ sender: "user", text: "📅 Reschedule Appointment", time: "Now" });
-        pushMessage({
-          sender: "ai",
-          title: "📅 Reschedule Appointment",
-          text: "Please select a new available date for your appointment:",
-          quickReplies: [
-            { label: "Mon, 3 Aug", action: "reschedule_date_2026-08-03_Mon, 3 Aug" },
-            { label: "Tue, 4 Aug", action: "reschedule_date_2026-08-04_Tue, 4 Aug" },
-            { label: "Wed, 5 Aug", action: "reschedule_date_2026-08-05_Wed, 5 Aug" },
-            { label: "Thu, 6 Aug", action: "reschedule_date_2026-08-06_Thu, 6 Aug" }
-          ],
-          time: "Now"
-        });
+        state.bookingState.locationId = state.managedAppointment.location?.code || state.managedAppointment.clinic?.code || "BWP";
+        pushMessage({ sender: "user", text: "Reschedule Appointment", time: "Now" });
+        loadAvailableDates("reschedule", "Reschedule Appointment");
         break;
 
       case "action_cancel_appt":
@@ -546,7 +574,7 @@
         pushMessage({
           sender: "ai",
           title: "📋 Appointment Details",
-          text: `👤 Patient: ${mAppt.patientName}\n🎫 Token: ${mAppt.tokenNumber}\n${mIsOnline ? '💻 Type: Online Appointment' : '🏥 Type: In-Person Appointment\n📍 Clinic: ' + (mAppt.clinic?.name || 'Iqbal Hospital') + '\n📌 Location: ' + (mAppt.clinic?.address || 'Noor Mahal Road, Bahawalpur')}\n📅 Date: ${mAppt.date}\n🕓 Time: ${mAppt.time}\n📋 Status: ${String(mAppt.status).toUpperCase()}`,
+          text: `👤 Patient: ${mAppt.patientName}\n🎫 Token: ${mAppt.tokenNumber}\n${mIsOnline ? '💻 Type: Online Appointment' : '🏥 Type: In-Person Appointment\n📍 Clinic: ' + (mAppt.clinic?.name || 'Configured clinic') + '\n📌 Location: ' + (mAppt.clinic?.address || '')}\n📅 Date: ${mAppt.date}\n🕓 Time: ${mAppt.time}\n📋 Status: ${String(mAppt.status).toUpperCase()}`,
           quickReplies: [
             { label: "✅ Confirm Appointment", action: "action_confirm_appt" },
             { label: "📅 Reschedule", action: "action_reschedule_appt" },
@@ -630,7 +658,7 @@
         pushMessage({
           sender: "ai",
           title: "🚨 Emergency Notice",
-          text: "This may require urgent medical attention. Please visit the nearest emergency department or contact your local emergency service (+92 300 1234567) immediately.",
+          text: "This may require urgent medical attention. Please visit the nearest emergency department or contact your local emergency service immediately.",
           html: `
             <form id="chat-emergency-form" class="demo-form compact" style="margin-top: 10px; background: #fff5f5; border-color: var(--red);">
               <label>Mobile Number
@@ -700,6 +728,8 @@
                 <label>Select Document File (PDF, JPG, PNG up to 10MB)
                   <input type="file" id="chat-file-input" name="reportFile" accept=".pdf,.jpg,.jpeg,.png" required>
                 </label>
+                <progress id="chat-upload-progress" value="0" max="100" style="display:none;width:100%;"></progress>
+                <small id="chat-upload-progress-text" aria-live="polite"></small>
                 <button class="primary-action wide-button" type="submit">Upload Document Now</button>
               </form>
             `,
@@ -712,22 +742,8 @@
           state.bookingState.date = dVal;
           state.bookingState.dateLabel = dLabel || dVal;
           pushMessage({ sender: "user", text: dLabel || dVal, time: "Now" });
-          pushMessage({
-            sender: "ai",
-            title: "🕒 Select New Time Slot",
-            text: "Please select an available time for your rescheduled appointment:",
-            quickReplies: [
-              { label: "4:30 PM", action: "reschedule_time_16:30_4:30 PM" },
-              { label: "5:00 PM", action: "reschedule_time_17:00_5:00 PM" },
-              { label: "5:30 PM", action: "reschedule_time_17:30_5:30 PM" },
-              { label: "6:00 PM", action: "reschedule_time_18:00_6:00 PM" },
-              { label: "6:30 PM", action: "reschedule_time_18:30_6:30 PM" },
-              { label: "7:00 PM", action: "reschedule_time_19:00_7:00 PM" },
-              { label: "7:30 PM", action: "reschedule_time_19:30_7:30 PM" },
-              { label: "8:00 PM", action: "reschedule_time_20:00_8:00 PM" }
-            ],
-            time: "Now"
-          });
+          loadAvailableTimes("reschedule", dVal);
+          break;
         } else if (action.startsWith("reschedule_time_")) {
           const raw = action.replace("reschedule_time_", "");
           const [tVal, tLabel] = raw.split("_");
@@ -765,23 +781,8 @@
           state.bookingState.dateLabel = dLabel || dVal;
           state.currentStep = "booking_time";
           pushMessage({ sender: "user", text: dLabel || dVal, time: "Now" });
-          if (options.isChanging) { showBookingReview(); break; }
-          pushMessage({
-            sender: "ai",
-            title: "🕒 Select Appointment Time",
-            text: "Please select an available appointment time:",
-            quickReplies: [
-              { label: "4:30 PM", action: "booking_time_16:30_4:30 PM" },
-              { label: "5:00 PM", action: "booking_time_17:00_5:00 PM" },
-              { label: "5:30 PM", action: "booking_time_17:30_5:30 PM" },
-              { label: "6:00 PM", action: "booking_time_18:00_6:00 PM" },
-              { label: "6:30 PM", action: "booking_time_18:30_6:30 PM" },
-              { label: "7:00 PM", action: "booking_time_19:00_7:00 PM" },
-              { label: "7:30 PM", action: "booking_time_19:30_7:30 PM" },
-              { label: "8:00 PM", action: "booking_time_20:00_8:00 PM" }
-            ],
-            time: "Now"
-          });
+          loadAvailableTimes("booking", dVal);
+          break;
         } else if (action.startsWith("booking_time_")) {
           const raw = action.replace("booking_time_", "");
           const [tVal, tLabel] = raw.split("_");
@@ -796,21 +797,32 @@
     renderChatView();
   }
 
-  function showBookingReview() {
+  async function showBookingReview() {
     state.currentStep = "booking_review";
     const isOnline = state.bookingState.appointmentType === "online";
+    if (!state.consentPolicy) {
+      try {
+        const response = await api.getAppointmentConsent();
+        state.consentPolicy = response.consent;
+      } catch (error) {
+        showToast("The consent statement could not be loaded. Please try again.");
+        return;
+      }
+    }
 
     pushMessage({
       sender: "ai",
       title: "📋 Please Confirm Your Appointment",
-      text: `👨‍⚕️ Doctor: Dr. Sohaib\n👤 Patient: ${state.bookingState.patientName}\n📞 Phone: ${state.bookingState.phoneNumber || state.activePhone}\n${isOnline ? '💻 Appointment Type: Online Appointment' : '🏥 Appointment Type: In-Person\n📍 Clinic: Iqbal Hospital\n📌 Location: Noor Mahal Road, Bahawalpur'}\n📅 Date: ${state.bookingState.dateLabel || state.bookingState.date}\n🕓 Time: ${state.bookingState.timeLabel || state.bookingState.time}`,
+      text: `👨‍⚕️ Doctor: Dr. Sohaib\n👤 Patient: ${state.bookingState.patientName}\n📞 Phone: ${state.bookingState.phoneNumber || state.activePhone}\n${isOnline ? '💻 Appointment Type: Online Appointment' : '🏥 Appointment Type: In-Person\n📍 Clinic: Iqbal Hospital\n📌 Location: Noor Mahal Road, Bahawalpur'}\n📅 Date: ${state.bookingState.dateLabel || state.bookingState.date}\n🕓 Time: ${state.bookingState.timeLabel || state.bookingState.time}\n\n${state.consentPolicy.text}\n\nConsent version: ${state.consentPolicy.version}. Nothing is preselected; select “I Consent & Confirm” only if you agree.`,
       quickReplies: [
-        { label: "✅ Confirm Appointment", action: "confirm_booking_final" },
+        { label: "✅ I Consent & Confirm", action: "confirm_booking_final" },
+        { label: "I Do Not Consent", action: "decline_booking_consent" },
         { label: "✏️ Change Details", action: "change_booking_menu" },
         { label: "❌ Cancel", action: "cancel_booking_prompt" }
       ],
       time: "Now"
     });
+    renderChatView();
   }
 
   function handleFreeTextInput(text) {
@@ -872,7 +884,7 @@
       pushMessage({
         sender: "ai",
         title: "🚨 Emergency Warning",
-        text: "This may require urgent medical attention. Please visit the nearest emergency department or contact your local emergency service (+92 300 1234567) immediately.",
+        text: "This may require urgent medical attention. Please visit the nearest emergency department or contact your local emergency service immediately.",
         quickReplies: [{ label: "🏠 Main Menu", action: "show_main_menu" }],
         time: "Now"
       });
@@ -922,9 +934,9 @@
             </div>
           </div>
           <div class="presentation-copy">
-            <span class="eyebrow">${isUrdu ? "آفیشل اسسٹنٹ" : "Official AI Assistant"}</span>
+            <span class="eyebrow">${isUrdu ? "آفیشل اسسٹنٹ" : "Official Appointment Assistant"}</span>
             <h1>${isUrdu ? "ڈاکٹر صہیب کلینک اسسٹنٹ" : "Dr. Sohaib Clinic Assistant"}</h1>
-            <p>Bilingual AI Assistant & Appointment Management Portal</p>
+            <p>Bilingual Automated Assistant & Appointment Management Portal</p>
           </div>
           <div class="clinic-mini">
             <div class="status-dot"></div>
@@ -945,7 +957,7 @@
               <div class="avatar">DS<span></span></div>
               <div class="chat-title">
                 <strong>Dr. Sohaib</strong>
-                <small>● ${state.conversationMode === "HUMAN" ? "Clinic Staff Connected" : (isUrdu ? "آن لائن (فعال اسسٹنٹ)" : "AI Appointment Assistant")}</small>
+                <small>● ${state.conversationMode === "HUMAN" ? "Clinic Staff Connected" : (isUrdu ? "آن لائن (فعال اسسٹنٹ)" : "Automated Appointment Assistant")}</small>
               </div>
               <button class="header-button" id="lang-toggle-chat">🌐 ${isUrdu ? "English" : "اردو"}</button>
             </header>
@@ -1129,7 +1141,7 @@
         pushMessage({
           sender: "ai",
           title: "✅ Appointment Found",
-          text: `👤 Patient: ${appt.patientName}\n🎫 Token: ${appt.tokenNumber}\n${isOnline ? '💻 Type: Online Appointment' : '🏥 Type: In-Person Appointment\n📍 Clinic: ' + (appt.clinic?.name || 'Iqbal Hospital') + '\n📌 Location: ' + (appt.clinic?.address || 'Noor Mahal Road, Bahawalpur')}\n📅 Date: ${appt.date}\n🕓 Time: ${appt.time}\n📋 Status: ${String(appt.status).toUpperCase()}`,
+          text: `👤 Patient: ${appt.patientName}\n🎫 Token: ${appt.tokenNumber}\n${isOnline ? '💻 Type: Online Appointment' : '🏥 Type: In-Person Appointment\n📍 Clinic: ' + (appt.clinic?.name || 'Configured clinic') + '\n📌 Location: ' + (appt.clinic?.address || '')}\n📅 Date: ${appt.date}\n🕓 Time: ${appt.time}\n📋 Status: ${String(appt.status).toUpperCase()}`,
           quickReplies: [
             { label: "✅ Confirm Appointment", action: "action_confirm_appt" },
             { label: "📅 Reschedule", action: "action_reschedule_appt" },
@@ -1204,12 +1216,15 @@
       }
 
       const formData = new FormData(reportForm);
-      const data = Object.fromEntries(formData);
-      data.fileName = file.name;
-      data.fileSize = file.size;
+      const progress = document.getElementById("chat-upload-progress");
+      const progressText = document.getElementById("chat-upload-progress-text");
+      if (progress) progress.style.display = "block";
 
       try {
-        const res = await api.uploadReport(data);
+        const res = await api.uploadReport(formData, (percent) => {
+          if (progress) progress.value = percent;
+          if (progressText) progressText.textContent = `Uploading: ${percent}%`;
+        });
         const rep = res.report;
         const linkedText = rep.tokenNumber || rep.appointmentId ? `\nIt has also been attached to your appointment record (${rep.tokenNumber ? '#' + rep.tokenNumber : rep.appointmentId}).` : '';
 
@@ -1256,10 +1271,10 @@
           </div>
           <form id="login-form">
             <label>Staff Email
-              <input type="email" name="email" value="admin@drsohaibdemo.com" required>
+              <input type="email" name="email" autocomplete="username" required>
             </label>
             <label>Password
-              <input type="password" name="password" value="Admin@123" required>
+              <input type="password" name="password" autocomplete="current-password" required>
             </label>
             <button class="primary-action wide-button" style="margin-top: 10px;" id="login-submit-btn">Login to Dashboard</button>
             <button type="button" class="header-button wide-button" id="login-back-patient" style="margin-top: 8px; color: var(--ink); border-color: var(--line);">Back to Patient Portal</button>
@@ -1292,7 +1307,25 @@
   // ----------------------------------------------------
   // EXPANDED DR. SOHAIB ADMIN DASHBOARD
   // ----------------------------------------------------
+  function canAccessAdminTab(tab) {
+    const role = state.user?.role;
+    const restrictedTabs = {
+      doctor_profile: ["super_admin"],
+      staff: ["super_admin"],
+      audit_logs: ["super_admin"],
+      settings: ["super_admin"],
+      weekly_schedule: ["super_admin", "receptionist"],
+      off_days: ["super_admin", "receptionist"],
+      special_schedules: ["super_admin", "receptionist"],
+      blocked_slots: ["super_admin", "receptionist"],
+      reports: ["super_admin", "doctor", "receptionist"],
+      consultations: ["super_admin", "doctor", "receptionist"]
+    };
+    return !restrictedTabs[tab] || restrictedTabs[tab].includes(role);
+  }
+
   async function renderAdminDashboard() {
+    if (!canAccessAdminTab(state.adminTab)) state.adminTab = "dashboard";
     app.innerHTML = `
       <div class="admin-shell">
         <aside class="admin-sidebar">
@@ -1353,6 +1386,10 @@
     `;
 
     document.querySelectorAll(".admin-sidebar nav button").forEach(btn => {
+      if (!canAccessAdminTab(btn.dataset.tab)) {
+        btn.remove();
+        return;
+      }
       btn.addEventListener("click", () => {
         state.adminTab = btn.dataset.tab;
         navigateTo(`/admin/${btn.dataset.tab}`);
@@ -1380,43 +1417,61 @@
 
     try {
       if (state.adminTab === "dashboard") {
-        const summaryRes = await api.dashboardSummary();
-        const apptsRes = await api.dashboardRecentAppointments();
+        const [summaryRes, apptsRes, locationRes] = await Promise.all([
+          api.dashboardSummary(state.dashboardLocationId, state.dashboardDate),
+          api.dashboardRecentAppointments(),
+          api.clinics()
+        ]);
         const s = summaryRes.summary || {};
+        state.dashboardLocationId = s.selectedClinic?.code || state.dashboardLocationId;
+        state.dashboardDate = s.selectedDate || state.dashboardDate;
+        const dashboardLocations = locationRes.locations || [];
 
         container.innerHTML = `
           <header>
             <h2>Dr. Sohaib Clinic Overview Dashboard</h2>
-            <small>Real-time analytics and clinic performance indicators</small>
+            <small>Database-calculated schedule and availability</small>
           </header>
+
+          <form id="dashboard-availability-filter" class="demo-form compact" style="margin:16px 0;display:grid;grid-template-columns:1fr 1fr auto;gap:12px;align-items:end;">
+            <label>Clinic
+              <select name="locationId">
+                ${dashboardLocations.map((location) => `<option value="${esc(location.code)}" ${location.code === state.dashboardLocationId ? 'selected' : ''}>${esc(location.clinicName)} — ${esc(location.status)}</option>`).join('')}
+              </select>
+            </label>
+            <label>Date
+              <input type="date" name="date" value="${esc(state.dashboardDate)}" required>
+            </label>
+            <button class="primary-action" type="submit">Apply</button>
+          </form>
 
           <div class="stat-grid">
             <article>
               <div class="stat-icon">📅</div>
               <div>
-                <strong>${s.todayAppointments || 0}</strong>
-                <small style="display: block;">Today's Appointments</small>
+                <strong>${s.totalPossibleSlots || 0}</strong>
+                <small style="display: block;">Total Possible Slots</small>
               </div>
             </article>
             <article>
               <div class="stat-icon" style="background:#dcfce7; color:#16a34a;">✅</div>
               <div>
-                <strong>${s.todayConfirmed || 0}</strong>
-                <small style="display: block;">Confirmed</small>
+                <strong>${s.bookedSlots || 0}</strong>
+                <small style="display: block;">Booked Slots</small>
               </div>
             </article>
             <article>
               <div class="stat-icon" style="background:#e0e7ff; color:#4f46e5;">🏁</div>
               <div>
-                <strong>${s.todayCompleted || 0}</strong>
-                <small style="display: block;">Completed</small>
+                <strong>${s.availableSlots || 0}</strong>
+                <small style="display: block;">Available Slots</small>
               </div>
             </article>
             <article>
               <div class="stat-icon" style="background:#fee2e2; color:#dc2626;">❌</div>
               <div>
-                <strong>${s.todayCancelled || 0}</strong>
-                <small style="display: block;">Cancelled</small>
+                <strong>${s.blockedSlots || 0}</strong>
+                <small style="display: block;">Blocked Slots</small>
               </div>
             </article>
           </div>
@@ -1425,29 +1480,29 @@
             <article>
               <div class="stat-icon" style="background:#fef3c7; color:#d97706;">⚠️</div>
               <div>
-                <strong>${s.noShows || 0}</strong>
-                <small style="display: block;">No-Shows</small>
+                <strong>${s.cancelledAppointments || 0}</strong>
+                <small style="display: block;">Cancelled Appointments</small>
               </div>
             </article>
             <article>
               <div class="stat-icon">🕒</div>
               <div>
-                <strong>${s.availableSlots || 0}</strong>
-                <small style="display: block;">Available Slots Today</small>
+                <strong>${s.todayConfirmed || 0}</strong>
+                <small style="display: block;">Confirmed</small>
               </div>
             </article>
             <article>
               <div class="stat-icon">⛔</div>
               <div>
-                <strong>${s.blockedSlotsCount || 0}</strong>
-                <small style="display: block;">Blocked Slots</small>
+                <strong>${s.todayCompleted || 0}</strong>
+                <small style="display: block;">Completed</small>
               </div>
             </article>
             <article>
               <div class="stat-icon">🚫</div>
               <div>
-                <strong>${s.upcomingOffDaysCount || 0}</strong>
-                <small style="display: block;">Upcoming Doctor Leave</small>
+                <strong>${s.noShows || 0}</strong>
+                <small style="display: block;">No-Shows</small>
               </div>
             </article>
           </div>
@@ -1491,7 +1546,7 @@
               <span class="badge confirmed">Appointment API: Connected</span>
               <span class="badge confirmed">Reminder System: Enabled</span>
               <span class="badge confirmed">File Storage: Connected</span>
-              <span class="badge confirmed">AI Assistant: Active</span>
+              <span class="badge confirmed">Automated Assistant: Active</span>
             </div>
           </div>
 
@@ -1519,7 +1574,7 @@
                     <td>${a.phoneE164 || a.phoneMasked}</td>
                     <td><span class="badge ${String(a.appointmentType).toLowerCase() === 'online' ? 'completed' : 'confirmed'}">${String(a.appointmentType).toLowerCase() === 'online' ? 'Online' : 'In-Person'}</span></td>
                     <td>${a.date} at ${a.time}</td>
-                    <td>${esc(a.locationSnapshot?.city || 'Bahawalpur')} (${esc(a.locationSnapshot?.clinicName || 'Iqbal Hospital')})</td>
+                    <td>${esc(a.locationSnapshot?.city || '')} (${esc(a.locationSnapshot?.clinicName || 'Configured clinic')})</td>
                     <td><span class="badge ${a.status}">${a.status}</span></td>
                   </tr>
                 `).join('')}
@@ -1527,6 +1582,13 @@
             </table>
           </div>
         `;
+        document.getElementById("dashboard-availability-filter")?.addEventListener("submit", (event) => {
+          event.preventDefault();
+          const data = Object.fromEntries(new FormData(event.target));
+          state.dashboardLocationId = data.locationId;
+          state.dashboardDate = data.date;
+          loadDashboardTabContent();
+        });
       } else if (state.adminTab === "appointments") {
         const res = await api.appointments();
         container.innerHTML = `
@@ -1559,7 +1621,7 @@
                     <td>${a.phoneE164 || a.phoneMasked}</td>
                     <td><span class="badge ${String(a.appointmentType).toLowerCase() === 'online' ? 'completed' : 'confirmed'}">${String(a.appointmentType).toLowerCase() === 'online' ? 'Online' : 'In-Person'}</span></td>
                     <td>${esc(a.locationSnapshot?.city || 'Bahawalpur')}</td>
-                    <td>${esc(a.locationSnapshot?.clinicName || 'Iqbal Hospital')}, ${esc(a.locationSnapshot?.address || 'Noor Mahal Road')}</td>
+                    <td>${esc(a.locationSnapshot?.clinicName || 'Configured clinic')}, ${esc(a.locationSnapshot?.address || '')}</td>
                     <td>${a.date} at ${a.time}</td>
                     <td><span class="badge ${a.status}">${a.status}</span></td>
                     <td>
@@ -1587,7 +1649,7 @@
           <header style="display:flex; justify-content:space-between; align-items:center;">
             <div>
               <h2>📎 Uploaded Medical Reports Directory</h2>
-              <small>Real-time patient uploads stored in MongoDB database</small>
+              <small>Patient report metadata with files held in private storage</small>
             </div>
             <button class="primary-action" id="refresh-reports-btn">🔄 Refresh Reports</button>
           </header>
@@ -1619,8 +1681,9 @@
                     <td>${new Date(r.createdAt || Date.now()).toLocaleString()}</td>
                     <td><span class="badge ${r.status === 'New' || r.status === 'Uploaded' ? 'pending' : 'confirmed'}">${r.status}</span></td>
                     <td>
-                      <button class="primary-action btn-sm" onclick="window.openReportFile('${esc(r.fileUrl || '#')}')">View File</button>
-                      ${r.status !== 'Reviewed' ? `<button class="primary-action btn-sm" style="background:#16a34a;" onclick="window.markReportReviewed('${r._id}')">Mark Reviewed</button>` : ''}
+                      ${['super_admin', 'doctor'].includes(state.user?.role) ? `<button class="primary-action btn-sm" onclick="window.openReportFile('${esc(r.reportId || r._id)}')" ${r.fileStatus !== 'active' ? 'disabled' : ''}>Download File</button>` : ''}
+                      ${r.fileStatus === 'active' && r.status !== 'Reviewed' && ['super_admin', 'doctor'].includes(state.user?.role) ? `<button class="primary-action btn-sm" style="background:#16a34a;" onclick="window.markReportReviewed('${r._id}')">Mark Reviewed</button>` : ''}
+                      ${state.user?.role === 'super_admin' ? `<button class="primary-action btn-sm" style="background:#b91c1c;" onclick="window.deleteReport('${esc(r.reportId || r._id)}')">Delete File</button>` : ''}
                     </td>
                   </tr>
                 `).join('') : `<tr><td colspan="9" style="text-align:center; padding:24px;">No medical reports uploaded yet.</td></tr>`}
@@ -1631,11 +1694,19 @@
 
         document.getElementById("refresh-reports-btn")?.addEventListener("click", () => loadDashboardTabContent());
 
-        window.openReportFile = (url) => {
-          if (url && url !== "#") {
-            window.open(url, "_blank");
-          } else {
-            showToast("Report document previewing is active.");
+        window.openReportFile = async (id) => {
+          try {
+            const result = await api.downloadReport(id);
+            const objectUrl = URL.createObjectURL(result.blob);
+            const link = document.createElement("a");
+            link.href = objectUrl;
+            link.download = "medical-report";
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+          } catch (error) {
+            showToast("Download error: " + error.message);
           }
         };
 
@@ -1643,6 +1714,17 @@
           await api.updateReportStatus(id, "Reviewed");
           showToast("Report marked as Reviewed!");
           loadDashboardTabContent();
+        };
+
+        window.deleteReport = async (id) => {
+          if (!window.confirm("Permanently remove this private medical file? The audit record will be retained.")) return;
+          try {
+            await api.deleteReport(id);
+            showToast("Medical file deleted securely.");
+            loadDashboardTabContent();
+          } catch (error) {
+            showToast("Deletion error: " + error.message);
+          }
         };
       } else if (state.adminTab === "calendar") {
         const res = await api.appointments();
@@ -1727,19 +1809,19 @@
                 <input name="doctorName" value="${esc(doc.doctorName || 'Dr. Sohaib')}" required>
               </label>
               <label>Qualifications
-                <input name="qualification" value="${esc(doc.qualification || 'Specialist Physician & Surgeon')}" required>
+                <input name="qualification" value="${esc(doc.qualification || '')}" required>
               </label>
               <label>Specialty
-                <input name="specialty" value="${esc(doc.specialty || 'Specialist Physician & Surgeon')}" required>
+                <input name="specialty" value="${esc(doc.specialty || '')}" required>
               </label>
               <label>Clinical Experience
-                <input name="experience" value="${esc(doc.experience || '12+ Years Clinical Experience')}" required>
+                <input name="experience" value="${esc(doc.experience || '')}" required>
               </label>
               <label>Services Offered
                 <textarea name="services" rows="3" required>${esc(doc.services || 'Professional Consultations, Surgical Evaluations, Comprehensive Diagnosis & Follow-up Care')}</textarea>
               </label>
               <label>Biography
-                <textarea name="bio" rows="3" required>${esc(doc.bio || 'Dr. Sohaib is a dedicated physician and surgeon based at Iqbal Hospital, Bahawalpur.')}</textarea>
+                <textarea name="bio" rows="3" required>${esc(doc.bio || '')}</textarea>
               </label>
               <button class="primary-action wide-button" type="submit" style="margin-top:10px;">Save Profile Changes</button>
             </form>
@@ -1792,6 +1874,9 @@
           </div>
         `;
       } else if (state.adminTab === "weekly_schedule") {
+        const scheduleRes = await api.getManagedSchedule("BWP");
+        const schedule = scheduleRes.location;
+        const dayNames = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
         container.innerHTML = `
           <header>
             <h2>📆 Weekly Clinic Schedule</h2>
@@ -1818,7 +1903,45 @@
             </div>
           </div>
         `;
+        container.innerHTML = `
+          <header><h2>Weekly Clinic Schedule</h2><small>Authoritative schedule for ${esc(schedule.clinicName)}, ${esc(schedule.city)}</small></header>
+          <div style="background:#ffffff;border:1px solid #e2e8f0;border-radius:14px;padding:24px;max-width:700px;">
+            <form id="weekly-schedule-form" class="demo-form">
+              <label>Clinic timezone<input name="timezone" value="${esc(schedule.timezone)}" required></label>
+              <label>Slot duration (minutes)<input type="number" name="slotDurationMinutes" min="5" max="240" value="${schedule.slotDurationMinutes}" required></label>
+              <label>Same-day advance cutoff (minutes)<input type="number" name="sameDayBookingCutoffMinutes" min="0" max="1440" value="${schedule.sameDayBookingCutoffMinutes || 0}" required></label>
+              ${(schedule.weeklyHours || []).slice().sort((a, b) => a.day - b.day).map((hours) => `
+                <fieldset style="display:grid;grid-template-columns:1fr auto 110px 110px;gap:8px;align-items:center;border:0;border-bottom:1px solid #eee;padding:10px 0;">
+                  <strong>${dayNames[hours.day - 1]}</strong>
+                  <label><input type="checkbox" name="day-${hours.day}-open" ${hours.isOpen ? 'checked' : ''}> Open</label>
+                  <input type="time" name="day-${hours.day}-start" value="${esc(hours.start)}" required>
+                  <input type="time" name="day-${hours.day}-end" value="${esc(hours.end)}" required>
+                </fieldset>
+              `).join('')}
+              <button class="primary-action wide-button" type="submit">Save Weekly Schedule</button>
+            </form>
+          </div>`;
+        document.getElementById("weekly-schedule-form")?.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const form = new FormData(event.target);
+          const payload = {
+            locationId: "BWP",
+            timezone: form.get("timezone"),
+            slotDurationMinutes: Number(form.get("slotDurationMinutes")),
+            sameDayBookingCutoffMinutes: Number(form.get("sameDayBookingCutoffMinutes")),
+            weeklyHours: dayNames.map((name, index) => ({ day: index + 1, isOpen: form.get(`day-${index + 1}-open`) === "on", start: form.get(`day-${index + 1}-start`), end: form.get(`day-${index + 1}-end`) }))
+          };
+          try {
+            await api.updateSchedule(payload);
+          } catch (error) {
+            if (!error.details?.requiresConfirmation || !window.confirm(`${error.message}\n\nExisting appointments will remain booked. Apply this schedule anyway?`)) throw error;
+            await api.updateSchedule({ ...payload, confirmExistingAppointments: true });
+          }
+          showToast("Weekly schedule saved in the clinic database.");
+          loadDashboardTabContent();
+        });
       } else if (state.adminTab === "off_days") {
+        const managedSchedule = (await api.getManagedSchedule("BWP")).location;
         container.innerHTML = `
           <header>
             <h2>🚫 Off-Days & Doctor Leave</h2>
@@ -1837,14 +1960,26 @@
             </form>
           </div>
         `;
+        container.insertAdjacentHTML("beforeend", `<div style="margin-top:16px;max-width:700px;"><h3>Saved blocked dates</h3>${(managedSchedule.blockedDates || []).length ? managedSchedule.blockedDates.map((entry) => `<div style="display:flex;justify-content:space-between;padding:10px;border-bottom:1px solid #eee;"><span><strong>${esc(entry.date)}</strong> — ${esc(entry.reason)}</span><button class="header-button unblock-date-btn" data-date="${esc(entry.date)}">Unblock</button></div>`).join('') : '<p>No blocked dates.</p>'}</div>`);
 
         document.getElementById("off-day-form")?.addEventListener("submit", async (e) => {
           e.preventDefault();
           const data = Object.fromEntries(new FormData(e.target));
-          await api.blockDate({ locationId: "BWP", date: data.date, reason: data.reason });
+          const payload = { locationId: "BWP", date: data.date, reason: data.reason };
+          try {
+            await api.blockDate(payload);
+          } catch (error) {
+            if (!error.details?.requiresConfirmation || !window.confirm(`${error.message}\n\nExisting appointments will remain booked. Block this date anyway?`)) throw error;
+            await api.blockDate({ ...payload, confirmExistingAppointments: true });
+          }
           showToast(`Date ${data.date} blocked successfully!`);
           loadDashboardTabContent();
         });
+        document.querySelectorAll(".unblock-date-btn").forEach((button) => button.addEventListener("click", async () => {
+          await api.unblockDate({ locationId: "BWP", date: button.dataset.date });
+          showToast(`Date ${button.dataset.date} unblocked.`);
+          loadDashboardTabContent();
+        }));
       } else if (state.adminTab === "special_schedules") {
         container.innerHTML = `
           <header>
@@ -1857,6 +1992,7 @@
           </div>
         `;
       } else if (state.adminTab === "blocked_slots") {
+        const managedSchedule = (await api.getManagedSchedule("BWP")).location;
         container.innerHTML = `
           <header>
             <h2>⛔ Blocked Slots Management</h2>
@@ -1878,14 +2014,26 @@
             </form>
           </div>
         `;
+        container.insertAdjacentHTML("beforeend", `<div style="margin-top:16px;max-width:700px;"><h3>Saved blocked slots</h3>${(managedSchedule.blockedSlots || []).length ? managedSchedule.blockedSlots.map((entry) => `<div style="display:flex;justify-content:space-between;padding:10px;border-bottom:1px solid #eee;"><span><strong>${esc(entry.date)} ${esc(entry.time)}</strong> — ${esc(entry.reason)}</span><button class="header-button unblock-slot-btn" data-date="${esc(entry.date)}" data-time="${esc(entry.time)}">Unblock</button></div>`).join('') : '<p>No blocked slots.</p>'}</div>`);
 
         document.getElementById("block-slot-form")?.addEventListener("submit", async (e) => {
           e.preventDefault();
           const data = Object.fromEntries(new FormData(e.target));
-          await api.blockSlot({ locationId: "BWP", date: data.date, time: data.time, reason: data.reason });
+          const payload = { locationId: "BWP", date: data.date, time: data.time, reason: data.reason };
+          try {
+            await api.blockSlot(payload);
+          } catch (error) {
+            if (!error.details?.requiresConfirmation || !window.confirm(`${error.message}\n\nThe existing appointment will remain booked. Block this slot anyway?`)) throw error;
+            await api.blockSlot({ ...payload, confirmExistingAppointments: true });
+          }
           showToast(`Slot ${data.time} on ${data.date} blocked!`);
           loadDashboardTabContent();
         });
+        document.querySelectorAll(".unblock-slot-btn").forEach((button) => button.addEventListener("click", async () => {
+          await api.unblockSlot({ locationId: "BWP", date: button.dataset.date, time: button.dataset.time });
+          showToast(`Slot ${button.dataset.time} on ${button.dataset.date} unblocked.`);
+          loadDashboardTabContent();
+        }));
       } else if (state.adminTab === "services") {
         container.innerHTML = `
           <header>
@@ -1984,7 +2132,7 @@
               ${convs.map(c => `
                 <div style="padding: 10px; border-bottom: 1px solid #edf2f1; cursor: pointer;" class="conv-item" data-id="${c._id}">
                   <strong>${esc(c.phoneE164)}</strong>
-                  <small style="display: block;">Handover: ${c.humanRequired ? '🔴 ACTIVE' : '🟢 AI Active'}</small>
+                  <small style="display: block;">Handover: ${c.humanRequired ? '🔴 ACTIVE' : '🟢 Automation Active'}</small>
                 </div>
               `).join('')}
             </div>
@@ -2007,11 +2155,11 @@
               <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--line); padding-bottom: 12px; margin-bottom: 12px;">
                 <div>
                   <h3>${esc(conv.phoneE164)}</h3>
-                  <small>Status: ${conv.humanRequired ? '🔴 Human Takeover Active' : '🟢 AI Active'}</small>
+                  <small>Status: ${conv.humanRequired ? '🔴 Human Takeover Active' : '🟢 Automation Active'}</small>
                 </div>
                 <div>
                   ${conv.humanRequired ? `
-                    <button class="primary-action" id="btn-reactivate-ai">Resume AI Assistant</button>
+                    <button class="primary-action" id="btn-reactivate-ai">Resume Automated Assistant</button>
                   ` : `
                     <button class="danger-action" id="btn-takeover">Take Over Conversation</button>
                   `}
@@ -2035,13 +2183,13 @@
 
             document.getElementById("btn-takeover")?.addEventListener("click", async () => {
               await api.takeoverConversation(id);
-              showToast("Human Takeover Activated. AI is paused.");
+              showToast("Human Takeover Activated. Automation is paused.");
               loadDashboardTabContent();
             });
 
             document.getElementById("btn-reactivate-ai")?.addEventListener("click", async () => {
               await api.reactivateAi(id);
-              showToast("AI Assistant Reactivated.");
+              showToast("Automated Assistant Reactivated.");
               loadDashboardTabContent();
             });
 
@@ -2081,10 +2229,10 @@
                     <td><span class="badge emergency">Human Takeover Active</span></td>
                     <td>${new Date(h.lastMessageAt || Date.now()).toLocaleTimeString()}</td>
                     <td>
-                      <button class="primary-action btn-sm" onclick="window.resumeAiHandler('${h._id}')">Resume AI Assistant</button>
+                      <button class="primary-action btn-sm" onclick="window.resumeAiHandler('${h._id}')">Resume Automated Assistant</button>
                     </td>
                   </tr>
-                `).join('') : `<tr><td colspan="4">No active human handover requests currently. AI is handling incoming queries.</td></tr>`}
+                `).join('') : `<tr><td colspan="4">No active human handover requests currently. Automation is handling incoming queries.</td></tr>`}
               </tbody>
             </table>
           </div>
@@ -2092,10 +2240,12 @@
 
         window.resumeAiHandler = async (id) => {
           await api.reactivateAi(id);
-          showToast("AI Assistant Reactivated!");
+          showToast("Automated Assistant Reactivated!");
           loadDashboardTabContent();
         };
       } else if (state.adminTab === "staff") {
+        const usersResponse = await api.staffUsers();
+        const users = usersResponse.users || [];
         container.innerHTML = `
           <header>
             <h2>👥 Staff Management & Roles</h2>
@@ -2111,14 +2261,14 @@
                 </tr>
               </thead>
               <tbody>
-                <tr><td><strong>Super Admin</strong></td><td>admin@drsohaibdemo.com</td><td><span class="badge confirmed">Super Admin</span></td><td>Active</td></tr>
-                <tr><td><strong>Dr. Sohaib</strong></td><td>doctor@drsohaibdemo.com</td><td><span class="badge confirmed">Doctor</span></td><td>Active</td></tr>
-                <tr><td><strong>Clinic Receptionist</strong></td><td>reception@drsohaibdemo.com</td><td><span class="badge pending">Receptionist</span></td><td>Active</td></tr>
+                ${users.length ? users.map((user) => `<tr><td><strong>${esc(user.name)}</strong></td><td>${esc(user.email)}</td><td><span class="badge confirmed">${esc(String(user.role).replaceAll('_', ' '))}</span></td><td>${user.isActive ? 'Active' : 'Inactive'}</td></tr>`).join('') : '<tr><td colspan="4">No staff accounts configured.</td></tr>'}
               </tbody>
             </table>
           </div>
         `;
       } else if (state.adminTab === "reminders") {
+        const reminderResponse = await api.reminders();
+        const reminders = reminderResponse.reminders || [];
         container.innerHTML = `
           <header>
             <h2>🔔 Appointment & Follow-Up Reminders</h2>
@@ -2134,7 +2284,7 @@
                 </tr>
               </thead>
               <tbody>
-                <tr><td>+923001234567</td><td>Appointment Confirmation</td><td><span class="badge confirmed">Sent</span></td><td>WhatsApp / In-App</td></tr>
+                ${reminders.length ? reminders.map((reminder) => `<tr><td>${esc(reminder.phoneE164 || '')}</td><td>${esc(String(reminder.type || '').replaceAll('_', ' '))}</td><td><span class="badge confirmed">${esc(reminder.status)}</span></td><td>WhatsApp</td></tr>`).join('') : '<tr><td colspan="4">No reminder jobs found.</td></tr>'}
                 <tr><td>+923001110001</td><td>24h Appointment Reminder</td><td><span class="badge pending">Scheduled</span></td><td>WhatsApp / In-App</td></tr>
               </tbody>
             </table>
@@ -2198,7 +2348,7 @@
               <div class="stat-icon" style="background:#dcfce7; color:#16a34a;">🤖</div>
               <div>
                 <strong>Active</strong>
-                <small style="display: block;">Chatbot AI Assistant</small>
+                <small style="display: block;">Automated Appointment Assistant</small>
               </div>
             </article>
             <article>
@@ -2229,8 +2379,18 @@
               <label>Appointment Slot Duration (Minutes)
                 <input type="number" name="slotDurationMinutes" value="${c.slotDurationMinutes || 15}" required>
               </label>
+              <label>Same-Day Advance Cutoff (Minutes)
+                <input type="number" name="sameDayBookingCutoffMinutes" min="0" max="1440" value="${c.sameDayBookingCutoffMinutes || 0}" required>
+              </label>
               <label>Contact Phone
-                <input name="contactNumber" value="${esc(c.contactNumber || '+92 300 1234567')}" required>
+                <input name="contactNumber" value="${esc(c.contactNumber || '')}" required>
+              </label>
+              <label style="display:flex;gap:10px;align-items:center;">
+                <input type="checkbox" name="remindersEnabled" ${c.remindersEnabled !== false ? 'checked' : ''}>
+                Enable appointment reminders
+              </label>
+              <label>Reminder Intervals (minutes before appointment, comma-separated)
+                <input name="reminderIntervalsMinutes" value="${esc((c.reminderIntervalsMinutes || [4320, 1440, 120]).join(', '))}" required>
               </label>
               <button class="primary-action wide-button" type="submit" style="margin-top:10px;">Save Settings</button>
             </form>
@@ -2241,7 +2401,15 @@
           e.preventDefault();
           const data = Object.fromEntries(new FormData(e.target));
           data.slotDurationMinutes = Number(data.slotDurationMinutes);
-          await api.updateClinicSettings(data);
+          data.sameDayBookingCutoffMinutes = Number(data.sameDayBookingCutoffMinutes);
+          data.remindersEnabled = e.target.elements.remindersEnabled.checked;
+          data.reminderIntervalsMinutes = String(data.reminderIntervalsMinutes || "").split(",").map((value) => Number(value.trim())).filter(Number.isFinite);
+          try {
+            await api.updateClinicSettings(data);
+          } catch (error) {
+            if (!error.details?.requiresConfirmation || !window.confirm(`${error.message}\n\nExisting appointments will remain booked. Apply these settings anyway?`)) throw error;
+            await api.updateClinicSettings({ ...data, confirmExistingAppointments: true });
+          }
           showToast("Settings Updated Successfully!");
           loadDashboardTabContent();
         });

@@ -23,9 +23,9 @@ if (mode === "secrets") {
     /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/,
     /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/,
     /\bsk-[A-Za-z0-9_-]{20,}\b/,
+    /\b(?:Admin|Doctor|Reception|Staff)@123\b/,
     /^SMTP_PASSWORD=\S+/m,
-    /^EMAIL_APPOINTMENT_ALERT_TO=\S+/m,
-    /^EMAIL_FROM_ADDRESS=\S+/m
+    /^(?:WHATSAPP_ACCESS_TOKEN|META_APP_SECRET|JWT_ACCESS_SECRET|JWT_REFRESH_SECRET|COOKIE_SECRET|STORAGE_ACCESS_KEY_ID|STORAGE_SECRET_ACCESS_KEY)=(?!(?:your_|change|example|placeholder))\S+/im
   ];
   const findings = files.flatMap((file) => forbidden.some((pattern) => pattern.test(read(file))) ? [file] : []);
   if (findings.length) throw new Error(`Potential secret found in: ${findings.join(", ")}`);

@@ -10,6 +10,7 @@ const {
 } = require("./emailTransport");
 const { sendOwnerAppointmentEmail } = require("./ownerAppointmentEmailService");
 const { audit } = require("./auditService");
+const { logError } = require("../utils/safeLogger");
 
 const NOTIFICATION_TYPE = "OWNER_NEW_APPOINTMENT_EMAIL";
 const RETRY_DELAYS_MS = [0, 60_000, 5 * 60_000]; // Max 3 attempts
@@ -39,16 +40,19 @@ function isEmailConfigured() {
 async function enqueueOwnerAppointmentEmail(appointment, { session, requestId } = {}) {
   if (!isEmailConfigured()) return null;
   const recipient = normalizeEmail(config.emailAppointmentAlert.to) || String(config.emailAppointmentAlert.to || "").trim();
+  const dedupeKey = `appointment:${appointment._id}:booked:${recipient}`;
   const options = { upsert: true, new: true, setDefaultsOnInsert: true };
   if (session) options.session = session;
   return EmailNotificationOutbox.findOneAndUpdate(
     {
-      appointmentId: appointment._id,
-      notificationType: NOTIFICATION_TYPE,
-      recipient
+      dedupeKey
     },
     {
       $setOnInsert: {
+        appointmentId: appointment._id,
+        notificationType: NOTIFICATION_TYPE,
+        recipient,
+        dedupeKey,
         channel: "email",
         requestId: requestId || randomUUID(),
         templateKey: "owner-new-appointment",
@@ -153,9 +157,7 @@ async function processOwnerEmailJobs({ limit = 10, outboxId, send = sendOwnerApp
 function kickOwnerEmailWorker(outboxId) {
   if (!outboxId || !isEmailConfigured()) return;
   const immediate = setImmediate(() => {
-    processOwnerEmailJobs({ limit: 1, outboxId }).catch((error) => {
-      console.warn("Owner email worker failed safely:", error.message || error);
-    });
+    processOwnerEmailJobs({ limit: 1, outboxId }).catch((error) => logError("Owner email worker failed", error));
   });
   immediate.unref?.();
 }
@@ -256,15 +258,11 @@ function startOwnerEmailScheduler() {
   }
 
   scheduler = setInterval(() => {
-    processOwnerEmailJobs().catch((error) => {
-      console.warn("Owner email scheduler failed safely:", error.message || error);
-    });
+    processOwnerEmailJobs().catch((error) => logError("Owner email scheduler failed", error));
   }, 60_000);
   scheduler.unref?.();
 
-  processOwnerEmailJobs().catch((error) => {
-    console.warn("Owner email recovery failed safely:", error.message || error);
-  });
+  processOwnerEmailJobs().catch((error) => logError("Owner email recovery failed", error));
 }
 
 function stopOwnerEmailSchedulerForTests() {

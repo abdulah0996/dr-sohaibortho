@@ -1,49 +1,64 @@
-const { ClinicSettings, DoctorProfileSettings, AuditLog } = require("../models");
+const { ClinicSettings, DoctorProfile, AuditLog } = require("../models");
+const { getLocation } = require("./locationService");
+const { updateLocation } = require("./scheduleService");
 const { config } = require("../config/env");
-const { defaultWeeklyHours } = require("../utils/time");
+const { notFound } = require("../utils/errors");
 
 async function getClinicSettings() {
   let settings = await ClinicSettings.findOne({ key: "default" });
   if (!settings) {
     settings = await ClinicSettings.create({
       key: "default",
-      contactNumber: config.clinicContactNumber,
-      timezone: config.clinicTimezone,
-      weeklyHours: defaultWeeklyHours(),
-      slotDurationMinutes: 15,
+      remindersEnabled: true,
       reminderIntervalsMinutes: [4320, 1440, 120]
     });
   }
-  return settings;
+  const location = await getLocation("BWP");
+  return {
+    ...settings.toObject(),
+    locationId: location._id,
+    locationCode: location.code,
+    contactNumber: location.contactNumber,
+    status: location.status,
+    timezone: location.timezone,
+    slotDurationMinutes: location.slotDurationMinutes,
+    sameDayBookingCutoffMinutes: location.sameDayBookingCutoffMinutes,
+    weeklyHours: location.weeklyHours,
+    blockedDates: location.blockedDates,
+    blockedSlots: location.blockedSlots
+  };
 }
 
-async function updateClinicSettings(input, staffUser) {
-  const allowed = {
-    contactNumber: input.contactNumber,
-    timezone: input.timezone,
-    slotDurationMinutes: input.slotDurationMinutes,
-    weeklyHours: input.weeklyHours,
-    reminderIntervalsMinutes: input.reminderIntervalsMinutes,
-    updatedBy: staffUser?._id
-  };
-
-  Object.keys(allowed).forEach((key) => allowed[key] === undefined && delete allowed[key]);
-
-  return ClinicSettings.findOneAndUpdate(
-    { key: "default" },
-    { $set: allowed },
-    { new: true, upsert: true, runValidators: true }
-  );
+async function updateClinicSettings(input, staffUser, options = {}) {
+  const location = await getLocation("BWP");
+  const scheduleUpdate = {};
+  for (const key of ["contactNumber", "status", "timezone", "slotDurationMinutes", "sameDayBookingCutoffMinutes", "weeklyHours"]) {
+    if (input[key] !== undefined) scheduleUpdate[key] = input[key];
+  }
+  if (Object.keys(scheduleUpdate).length) {
+    await updateLocation(location._id, scheduleUpdate, { confirmExistingAppointments: options.confirmExistingAppointments === true });
+  }
+  if (input.reminderIntervalsMinutes !== undefined || input.remindersEnabled !== undefined) {
+    const reminderUpdate = { updatedBy: staffUser?._id };
+    if (input.reminderIntervalsMinutes !== undefined) reminderUpdate.reminderIntervalsMinutes = [...new Set(input.reminderIntervalsMinutes)].sort((a, b) => b - a);
+    if (input.remindersEnabled !== undefined) reminderUpdate.remindersEnabled = input.remindersEnabled;
+    await ClinicSettings.findOneAndUpdate(
+      { key: "default" },
+      { $set: reminderUpdate },
+      { new: true, upsert: true, runValidators: true }
+    );
+  }
+  return getClinicSettings();
 }
 
 async function getDoctorProfile() {
-  let profile = await DoctorProfileSettings.findOne({ key: "default" });
+  let profile = await DoctorProfile.findOne({ doctorKey: "dr-sohaib" });
   if (!profile) {
-    profile = await DoctorProfileSettings.create({
-      key: "default",
+    if (config.isProduction) throw notFound("Doctor profile has not been configured.");
+    profile = await DoctorProfile.create({
+      doctorKey: "dr-sohaib",
       doctorName: "Dr. Shoaib Aslam",
-      contactNumber: config.clinicContactNumber,
-      profileImageUrl: ""
+      profileImage: ""
     });
   }
   return profile;
@@ -52,27 +67,42 @@ async function getDoctorProfile() {
 async function updateDoctorProfile(input, staffUser) {
   const allowed = {
     doctorName: input.doctorName,
-    contactNumber: input.contactNumber,
     specialty: input.specialty,
-    qualifications: input.qualifications,
+    qualification: input.qualifications,
     experience: input.experience,
-    biography: input.biography,
-    clinicLocation: input.clinicLocation,
-    profileImageUrl: input.profileImageUrl,
-    updatedBy: staffUser?._id
+    bio: input.biography,
+    consultationLocation: input.clinicLocation,
+    profileImage: input.profileImageUrl
   };
 
   Object.keys(allowed).forEach((key) => allowed[key] === undefined && delete allowed[key]);
 
-  return DoctorProfileSettings.findOneAndUpdate(
-    { key: "default" },
+  if (config.isProduction && !(await DoctorProfile.exists({ doctorKey: "dr-sohaib" }))) {
+    return DoctorProfile.create({
+      doctorKey: "dr-sohaib",
+      doctorName: "",
+      profileImage: "",
+      qualification: "",
+      specialty: "",
+      experience: "",
+      services: "",
+      consultationLocation: "",
+      consultationDays: "",
+      consultationTimings: "",
+      bio: "",
+      ...allowed
+    });
+  }
+
+  return DoctorProfile.findOneAndUpdate(
+    { doctorKey: "dr-sohaib" },
     { $set: allowed },
     { new: true, upsert: true, runValidators: true }
   );
 }
 
 async function listAuditLogs({ limit = 100 } = {}) {
-  return AuditLog.find().sort({ createdAt: -1 }).limit(Math.min(Number(limit) || 100, 300)).lean();
+  return AuditLog.find().sort({ createdAt: -1 }).limit(Math.max(1, Math.min(Number(limit) || 100, 300))).lean();
 }
 
 module.exports = {

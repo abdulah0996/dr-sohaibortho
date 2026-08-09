@@ -1,19 +1,21 @@
 const mongoose = require("mongoose");
 const { config } = require("./env");
+const { logError } = require("../utils/safeLogger");
 
 let mongod = null;
 
-async function connectDatabase() {
+async function connectDatabase(options = {}) {
   mongoose.set("strictQuery", true);
+  const autoIndex = options.autoIndex ?? !config.isProduction;
   try {
     await mongoose.connect(config.mongoUri, {
-      autoIndex: !config.isProduction,
+      autoIndex,
       serverSelectionTimeoutMS: 5000
     });
-    console.log("MongoDB connected to", config.mongoUri);
+    console.log("MongoDB connected successfully.");
   } catch (error) {
     if (config.isProduction || process.env.NODE_ENV === "production") {
-      console.error("Production MongoDB connection failed:", error.message || error);
+      logError("Production MongoDB connection failed", error);
       throw error;
     }
 
@@ -23,18 +25,19 @@ async function connectDatabase() {
       const { MongoMemoryServer } = require("mongodb-memory-server");
       mongod = await MongoMemoryServer.create();
       const uri = mongod.getUri();
-      await mongoose.connect(uri, { autoIndex: true });
+      await mongoose.connect(uri, { autoIndex });
       console.log("In-memory MongoDB connected successfully.");
     } catch (memError) {
-      console.error("In-memory MongoDB startup error:", memError.message);
+      logError("In-memory MongoDB startup failed", memError);
       throw error;
     }
   }
 }
 
 async function disconnectDatabase() {
-  await mongoose.disconnect();
+  if (mongoose.connection.readyState !== 0) await mongoose.disconnect();
   if (mongod) await mongod.stop();
+  mongod = null;
 }
 
 module.exports = { connectDatabase, disconnectDatabase };
