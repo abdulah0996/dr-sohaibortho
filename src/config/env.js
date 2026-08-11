@@ -1,7 +1,6 @@
 require("dotenv").config();
 
 const requiredInProduction = [
-  "MONGODB_URI",
   "JWT_ACCESS_SECRET",
   "JWT_REFRESH_SECRET",
   "COOKIE_SECRET",
@@ -57,6 +56,11 @@ for (const key of requiredInProduction) {
   }
 }
 
+if (isProduction && ![process.env.MONGODB_URI_V2, process.env.MONGODB_URI]
+  .some((value) => String(value || "").trim())) {
+  throw new Error("Missing required production environment variable: MONGODB_URI_V2 or MONGODB_URI");
+}
+
 function read(name, fallback = "") {
   return process.env[name] || fallback;
 }
@@ -87,12 +91,13 @@ const emailPassword = read("EMAIL_PASSWORD", read("SMTP_PASSWORD"));
 const emailFrom = read("EMAIL_FROM", read("EMAIL_FROM_ADDRESS")).trim();
 const ownerEmail = read("OWNER_EMAIL", read("EMAIL_APPOINTMENT_ALERT_TO")).trim();
 const emailSecure = readBoolean("EMAIL_SECURE", readBoolean("SMTP_SECURE", false));
+const mongoUriOverride = String(process.env.MONGODB_URI_V2 || "").trim();
 
 const config = {
   nodeEnv,
   isProduction,
   port: readNumber("PORT", 3000),
-  mongoUri: read("MONGODB_URI", "mongodb://127.0.0.1:27017/dr-sohaib-whatsapp-chatbot"),
+  mongoUri: mongoUriOverride || read("MONGODB_URI", "mongodb://127.0.0.1:27017/dr-sohaib-whatsapp-chatbot").trim(),
   frontendUrl: read("FRONTEND_URL", "http://localhost:3000"),
   corsOrigins: readOrigins(),
   jwtAccessSecret: read("JWT_ACCESS_SECRET", "dev-only-change-this-access-secret"),

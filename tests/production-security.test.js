@@ -143,6 +143,16 @@ test("missing or weak critical production variables stop configuration loading",
   assert.doesNotMatch(`${weak.stdout}${weak.stderr}`, /UltraSecretDatabasePassword123/);
 });
 
+test("a private MongoDB URI override replaces a stuck legacy hosting value", () => {
+  const overrideUri = "mongodb://overrideuser:OverrideDatabasePassword987!@127.0.0.1:2/clinic?authSource=admin";
+  const result = runNode(
+    ["-e", "process.stdout.write(require('./src/config/env').config.mongoUri)"],
+    productionEnvironment({ MONGODB_URI: "", MONGODB_URI_V2: overrideUri })
+  );
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout, overrideUri);
+});
+
 test("production database failure exits without listening or revealing its URI", () => {
   const result = runNode(["server.js"], productionEnvironment());
   const output = `${result.stdout}${result.stderr}`;
