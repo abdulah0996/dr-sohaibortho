@@ -36,7 +36,7 @@
     "report:permissions": "node scripts/generate-endpoint-permission-report.js"
   },
   "engines": {
-    "node": ">=18.18.0"
+    "node": ">=20.0.0"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1106.0",
