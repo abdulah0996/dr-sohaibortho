@@ -14,10 +14,24 @@
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-      const error = new Error(data.error?.message || data.message || "The request could not be completed.");
-      error.code = data.error?.code;
-      error.details = data.error?.details;
+      let errorMessage =
+        (typeof data?.error === "string" ? data.error : data?.error?.message) ||
+        data?.message ||
+        "The request could not be completed.";
+
+      if (data?.error?.details?.fieldErrors) {
+        const fields = Object.entries(data.error.details.fieldErrors)
+          .map(([field, msgs]) => `${field}: ${Array.isArray(msgs) ? msgs.join(", ") : msgs}`)
+          .join("; ");
+        if (fields) {
+          errorMessage += ` (${fields})`;
+        }
+      }
+
+      const error = new Error(errorMessage);
       error.status = response.status;
+      error.code = typeof data?.error === "object" ? data?.error?.code : undefined;
+      error.details = typeof data?.error === "object" ? data?.error?.details : undefined;
       throw error;
     }
     return data;
