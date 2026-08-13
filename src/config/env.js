@@ -161,46 +161,21 @@ if (isProduction) {
     if (!strongSecret(config.whatsapp.accessToken) || !strongSecret(config.whatsapp.metaAppSecret) || !strongSecret(config.whatsapp.verifyToken)) {
       throw new Error("Production WhatsApp secrets must be strong non-placeholder values.");
     }
-  }
-
-  if (config.emailAppointmentAlert.enabled) {
-    const email = config.emailAppointmentAlert;
-    if (!email.smtp.host || !Number.isInteger(email.smtp.port) || email.smtp.port < 1 || email.smtp.port > 65535) throw new Error("Invalid production email SMTP configuration.");
-    if (!email.smtp.user || !email.smtp.password) throw new Error("Missing required production email SMTP credentials.");
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.to) || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.fromAddress)) throw new Error("Invalid production owner/from email configuration.");
-  }
-
-  if (config.storage.provider === "s3") {
-    if (!config.storage.accessKeyId || !config.storage.secretAccessKey || /(your_|change|placeholder|example)/i.test(`${config.storage.accessKeyId}${config.storage.secretAccessKey}`)) throw new Error("Invalid production private-storage credentials.");
-    try {
-      const storageUrl = new URL(config.storage.endpoint);
-      if (storageUrl.protocol !== "https:") throw new Error("insecure");
-    } catch {
-      throw new Error("Invalid production environment variable: STORAGE_ENDPOINT");
+    if (!/^v\d+\.\d+$/.test(config.whatsapp.graphVersion)) throw new Error("Invalid production environment variable: WHATSAPP_GRAPH_VERSION");
+    if (!/^\d+$/.test(config.whatsapp.phoneNumberId)) throw new Error("Invalid production environment variable: WHATSAPP_PHONE_NUMBER_ID");
+    if (!/^\d+$/.test(config.whatsapp.businessAccountId)) throw new Error("Invalid production environment variable: WHATSAPP_BUSINESS_ACCOUNT_ID");
+    const templateNamePattern = /^[a-z0-9_]{1,512}$/;
+    const languagePattern = /^[a-z]{2,3}(?:_[A-Z]{2})?$/;
+    const contracts = [
+      ["WHATSAPP_TEMPLATE_APPOINTMENT_CONFIRMATION", config.whatsapp.templates.appointmentConfirmation, "WHATSAPP_TEMPLATE_APPOINTMENT_CONFIRMATION_LANGUAGE", config.whatsapp.templates.appointmentConfirmationLanguage],
+      ["WHATSAPP_TEMPLATE_APPOINTMENT_REMINDER", config.whatsapp.templates.appointmentReminder, "WHATSAPP_TEMPLATE_APPOINTMENT_REMINDER_LANGUAGE", config.whatsapp.templates.appointmentReminderLanguage],
+      ["WHATSAPP_TEMPLATE_RESCHEDULE_CONFIRMATION", config.whatsapp.templates.rescheduleConfirmation, "WHATSAPP_TEMPLATE_RESCHEDULE_CONFIRMATION_LANGUAGE", config.whatsapp.templates.rescheduleConfirmationLanguage],
+      ["WHATSAPP_TEMPLATE_CANCELLATION_CONFIRMATION", config.whatsapp.templates.cancellationConfirmation, "WHATSAPP_TEMPLATE_CANCELLATION_CONFIRMATION_LANGUAGE", config.whatsapp.templates.cancellationConfirmationLanguage]
+    ];
+    for (const [nameKey, name, languageKey, language] of contracts) {
+      if (!templateNamePattern.test(name)) throw new Error(`Invalid production environment variable: ${nameKey}`);
+      if (!languagePattern.test(language)) throw new Error(`Invalid production environment variable: ${languageKey}`);
     }
-    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{1,254}$/.test(config.storage.bucket)) throw new Error("Invalid production environment variable: STORAGE_BUCKET");
-    if (!/^[a-zA-Z0-9-]{2,100}$/.test(config.storage.region)) throw new Error("Invalid production environment variable: STORAGE_REGION");
-  }
-  if (!Number.isInteger(config.storage.maxUploadBytes) || config.storage.maxUploadBytes < 1024 || config.storage.maxUploadBytes > 50 * 1024 * 1024) {
-    throw new Error("Invalid production environment variable: STORAGE_MAX_UPLOAD_BYTES");
-  }
-  if (!Number.isInteger(config.storage.signedUrlExpirySeconds) || config.storage.signedUrlExpirySeconds < 30 || config.storage.signedUrlExpirySeconds > 3600) {
-    throw new Error("Invalid production environment variable: STORAGE_SIGNED_URL_EXPIRY_SECONDS");
-  }
-  const templateNamePattern = /^[a-z0-9_]{1,512}$/;
-  const languagePattern = /^[a-z]{2,3}(?:_[A-Z]{2})?$/;
-  if (!/^v\d+\.\d+$/.test(config.whatsapp.graphVersion)) throw new Error("Invalid production environment variable: WHATSAPP_GRAPH_VERSION");
-  if (!/^\d+$/.test(config.whatsapp.phoneNumberId)) throw new Error("Invalid production environment variable: WHATSAPP_PHONE_NUMBER_ID");
-  if (!/^\d+$/.test(config.whatsapp.businessAccountId)) throw new Error("Invalid production environment variable: WHATSAPP_BUSINESS_ACCOUNT_ID");
-  const contracts = [
-    ["WHATSAPP_TEMPLATE_APPOINTMENT_CONFIRMATION", config.whatsapp.templates.appointmentConfirmation, "WHATSAPP_TEMPLATE_APPOINTMENT_CONFIRMATION_LANGUAGE", config.whatsapp.templates.appointmentConfirmationLanguage],
-    ["WHATSAPP_TEMPLATE_APPOINTMENT_REMINDER", config.whatsapp.templates.appointmentReminder, "WHATSAPP_TEMPLATE_APPOINTMENT_REMINDER_LANGUAGE", config.whatsapp.templates.appointmentReminderLanguage],
-    ["WHATSAPP_TEMPLATE_RESCHEDULE_CONFIRMATION", config.whatsapp.templates.rescheduleConfirmation, "WHATSAPP_TEMPLATE_RESCHEDULE_CONFIRMATION_LANGUAGE", config.whatsapp.templates.rescheduleConfirmationLanguage],
-    ["WHATSAPP_TEMPLATE_CANCELLATION_CONFIRMATION", config.whatsapp.templates.cancellationConfirmation, "WHATSAPP_TEMPLATE_CANCELLATION_CONFIRMATION_LANGUAGE", config.whatsapp.templates.cancellationConfirmationLanguage]
-  ];
-  for (const [nameKey, name, languageKey, language] of contracts) {
-    if (!templateNamePattern.test(name)) throw new Error(`Invalid production environment variable: ${nameKey}`);
-    if (!languagePattern.test(language)) throw new Error(`Invalid production environment variable: ${languageKey}`);
   }
 }
 
