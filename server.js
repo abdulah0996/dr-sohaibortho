@@ -20,12 +20,6 @@ async function startServer(dependencies = {}) {
   const appFactory = dependencies.createApp || createApp;
   const inspect = dependencies.inspectInitialData || inspectInitialData;
 
-  // Production never accepts traffic until its real database is connected.
-  await connect();
-  const initialData = await inspect();
-  if (initialData.staffCount === 0) console.warn("No staff accounts exist. Run the one-time Super Admin bootstrap command.");
-  if (initialData.locationCount === 0) console.warn("No clinic locations exist. Configure verified clinic details before accepting bookings.");
-
   const app = appFactory();
   const host = "0.0.0.0";
   const port = config.port;
@@ -34,17 +28,49 @@ async function startServer(dependencies = {}) {
     listener.once("error", reject);
   });
 
-  startReminderScheduler();
-  startOwnerEmailScheduler();
-  console.log(`Appointment system started on port ${port}.`);
+  console.log(`Appointment system listening on port ${port}.`);
+  let stopped = false;
+  let retryTimer;
+  let backgroundStarted = false;
+  let initialData = { staffCount: 0, locationCount: 0 };
+
+  const databaseReady = (async function connectWithRetry() {
+    let attempt = 0;
+    while (!stopped) {
+      attempt += 1;
+      try {
+        await connect();
+        initialData = await inspect();
+        if (initialData.staffCount === 0) console.warn("No staff accounts exist. Run the one-time Super Admin bootstrap command.");
+        if (initialData.locationCount === 0) console.warn("No clinic locations exist. Configure verified clinic details before accepting bookings.");
+        if (!backgroundStarted) {
+          startReminderScheduler();
+          startOwnerEmailScheduler();
+          backgroundStarted = true;
+        }
+        console.log("Database and background services are ready.");
+        return initialData;
+      } catch (error) {
+        logError("Database startup attempt failed", error, { attempt });
+        await disconnect().catch(() => undefined);
+        const delay = Math.min(30_000, 1_000 * (2 ** Math.min(attempt - 1, 5)));
+        await new Promise((resolve) => { retryTimer = setTimeout(resolve, delay); });
+      }
+    }
+    return initialData;
+  }());
 
   let shuttingDown = false;
   async function shutdown(signal = "shutdown", exitCode = 0) {
     if (shuttingDown) return;
     shuttingDown = true;
+    stopped = true;
+    clearTimeout(retryTimer);
     console.log(`${signal} received. Closing application services.`);
-    stopReminderScheduler();
-    stopOwnerEmailSchedulerForTests();
+    if (backgroundStarted) {
+      stopReminderScheduler();
+      stopOwnerEmailSchedulerForTests();
+    }
     const forced = setTimeout(() => {
       server.closeAllConnections?.();
     }, 10_000);
@@ -55,7 +81,7 @@ async function startServer(dependencies = {}) {
     if (dependencies.exitOnShutdown !== false) process.exit(exitCode);
   }
 
-  return { app, server, shutdown, initialData };
+  return { app, server, shutdown, initialData, databaseReady };
 }
 
 async function main() {

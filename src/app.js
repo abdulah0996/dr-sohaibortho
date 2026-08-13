@@ -6,6 +6,7 @@ const cors = require("cors");
 const cookieParser = require("cookie-parser");
 const compression = require("compression");
 const mongoSanitize = require("express-mongo-sanitize");
+const mongoose = require("mongoose");
 const { config } = require("./config/env");
 const { apiLimiter, strictOrigin } = require("./middleware/security");
 const { notFoundHandler, errorHandler } = require("./middleware/errorHandler");
@@ -71,6 +72,19 @@ function createApp() {
   app.use(mongoSanitize({ replaceWith: "_" }));
   app.use(strictOrigin);
   app.use("/api", apiLimiter);
+
+  // Hostinger requires the HTTP process to bind promptly. Keep all database-backed
+  // APIs fail-closed until MongoDB is genuinely connected; liveness, readiness and
+  // Meta's GET verification handshake remain available during a reconnect.
+  app.use("/api", (req, res, next) => {
+    if (!config.isProduction || mongoose.connection.readyState === 1) return next();
+    if (req.path === "/health" || req.path === "/health/ready") return next();
+    if (req.method === "GET" && req.path === "/whatsapp/webhook") return next();
+    return res.status(503).json({
+      success: false,
+      error: { code: "DATABASE_NOT_READY", message: "The service is starting. Please try again shortly." }
+    });
+  });
 
   // Mount API Routes
   app.use("/api/auth", require("./routes/auth"));

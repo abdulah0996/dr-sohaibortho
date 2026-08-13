@@ -154,13 +154,12 @@ test("a private MongoDB URI override replaces a stuck legacy hosting value", () 
   assert.equal(result.stdout, overrideUri);
 });
 
-test("production database failure exits without listening or revealing its URI", () => {
+test("production database failure never reveals its URI", () => {
   const result = runNode(["server.js"], productionEnvironment());
   const output = `${result.stdout}${result.stderr}`;
   assert.notEqual(result.status, 0);
-  assert.doesNotMatch(output, /Appointment system started/);
   assert.doesNotMatch(output, /UltraSecretDatabasePassword123|mongodb:\/\/dbuser/);
-  assert.match(output, /Application startup failed/);
+  assert.match(output, /Database startup attempt failed/);
 });
 
 test("safe logging removes database URIs, bearer tokens and secret assignments", () => {
