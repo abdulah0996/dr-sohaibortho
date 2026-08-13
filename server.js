@@ -1,10 +1,51 @@
-const { config } = require("./src/config/env");
-const { connectDatabase, disconnectDatabase } = require("./src/config/db");
-const { createApp } = require("./src/app");
-const { startReminderScheduler, stopReminderScheduler } = require("./src/services/reminderService");
-const { startOwnerEmailScheduler, stopOwnerEmailSchedulerForTests } = require("./src/services/ownerEmailOutboxService");
-const { StaffUser, ClinicLocation } = require("./src/models");
-const { logError } = require("./src/utils/safeLogger");
+const http = require("http");
+
+let config;
+let connectDatabase;
+let disconnectDatabase;
+let createApp;
+let startReminderScheduler;
+let stopReminderScheduler;
+let startOwnerEmailScheduler;
+let stopOwnerEmailSchedulerForTests;
+let StaffUser;
+let ClinicLocation;
+let logError;
+let bootstrapError;
+
+try {
+  ({ config } = require("./src/config/env"));
+  ({ connectDatabase, disconnectDatabase } = require("./src/config/db"));
+  ({ createApp } = require("./src/app"));
+  ({ startReminderScheduler, stopReminderScheduler } = require("./src/services/reminderService"));
+  ({ startOwnerEmailScheduler, stopOwnerEmailSchedulerForTests } = require("./src/services/ownerEmailOutboxService"));
+  ({ StaffUser, ClinicLocation } = require("./src/models"));
+  ({ logError } = require("./src/utils/safeLogger"));
+} catch (error) {
+  bootstrapError = error;
+}
+
+function safeBootstrapReason(error) {
+  const message = String(error?.message || "");
+  if (/^Missing required production environment variable: [A-Z0-9_ ]+$/.test(message)) return message;
+  if (/^Invalid production environment variable: [A-Z0-9_]+$/.test(message)) return message;
+  if (/^Production (?:authentication|WhatsApp) secrets must /.test(message)) return message;
+  if (/^Unsafe production TLS configuration/.test(message)) return message;
+  return "Production configuration could not be validated.";
+}
+
+function startRestrictedBootstrapServer(error) {
+  const reason = safeBootstrapReason(error);
+  const port = Number(process.env.PORT) || 3000;
+  const server = http.createServer((req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.statusCode = 503;
+    res.end(JSON.stringify({ success: false, status: "configuration_error", reason }));
+  });
+  server.listen(port, "0.0.0.0", () => console.error("Restricted startup mode.", { reason }));
+  return server;
+}
 
 async function inspectInitialData() {
   const [staffCount, locationCount] = await Promise.all([
@@ -107,6 +148,9 @@ async function main() {
   });
 }
 
-if (require.main === module) main();
+if (require.main === module) {
+  if (bootstrapError) startRestrictedBootstrapServer(bootstrapError);
+  else main();
+}
 
-module.exports = { inspectInitialData, startServer, main };
+module.exports = { inspectInitialData, startServer, main, safeBootstrapReason, startRestrictedBootstrapServer };
