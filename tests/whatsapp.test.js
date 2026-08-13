@@ -90,7 +90,7 @@ async function reachBookingReview(phone = "+923001234567") {
   reply = await handleIncomingMessage({ phoneE164: phone, text: "WhatsApp Test Patient", messageId: "direct-name" });
   assert.equal(reply.kind, "buttons");
   reply = await handleIncomingMessage({ phoneE164: phone, text: "Use this number", replyId: "BOOK_PHONE_CONFIRM", messageId: "direct-phone" });
-  assert.equal(reply.buttonText, "Department");
+  assert.equal(reply.buttonText, "🩺 Select Department");
   reply = await handleIncomingMessage({ phoneE164: phone, text: "General", replyId: "BOOK_REASON_0", messageId: "direct-reason" });
   const dateId = reply.sections[0].rows.find((row) => row.id.startsWith("BOOK_DATE_")).id;
   reply = await handleIncomingMessage({ phoneE164: phone, text: "Date", replyId: dateId, messageId: "direct-date" });

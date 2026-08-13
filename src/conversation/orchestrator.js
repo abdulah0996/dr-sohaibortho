@@ -22,6 +22,8 @@ const consultationReasons = [
   "Prefer not to say"
 ];
 
+const departmentIcons = ["🩺", "🦴", "🦵", "🧍", "💪", "🏃", "🩹", "🔄", "📄", "🔒"];
+
 function createConversationOrchestrator(deps = {}) {
   const d = { models, appointmentService, availabilityService, locationService, appointmentNotificationService, ...deps };
 
@@ -48,10 +50,10 @@ function createConversationOrchestrator(deps = {}) {
       mode === "booking" ? "Select an active clinic for your appointment." : "Select the clinic for the rescheduled appointment.",
       withNavigation(locations.slice(0, 9).map((location) => ({
         id: `${mode === "booking" ? "BOOK_LOCATION" : "RESCHEDULE_LOCATION"}_${location.code}`,
-        title: `${location.city} - ${location.code}`.slice(0, 24),
+        title: `📍 ${location.city}`.slice(0, 24),
         description: location.clinicName.slice(0, 72)
       }))),
-      "Select clinic"
+      "📍 Select District"
     );
   }
 
@@ -63,13 +65,13 @@ function createConversationOrchestrator(deps = {}) {
     const prefix = mode === "booking" ? "BOOK" : "RESCHEDULE";
     const rows = page.map((entry) => ({
       id: `${prefix}_DATE_${entry.date}`,
-      title: entry.date,
+      title: `📅 ${entry.date}`,
       description: `${entry.availableSlots} available slot${entry.availableSlots === 1 ? "" : "s"}`
     }));
     if (dates.length > offset + 8) rows.push({ id: `${prefix}_DATES_MORE_${offset + 8}`, title: "More dates" });
     rows.push({ id: "BACK", title: "Back" });
     await save(session, mode === "booking" ? "BOOKING_DATE" : "RESCHEDULE_DATE", context);
-    return msg.list("Select an available appointment date.", rows, "Select date");
+    return msg.list("Choose an available appointment date.", rows, "📅 Select Date");
   }
 
   async function slotMenu(session, mode, offset = 0) {
@@ -79,11 +81,11 @@ function createConversationOrchestrator(deps = {}) {
     if (!available.length) return { body: "That date no longer has an available slot. Type BACK to select another date." };
     const page = available.slice(offset, offset + 8);
     const prefix = mode === "booking" ? "BOOK" : "RESCHEDULE";
-    const rows = page.map((slot) => ({ id: `${prefix}_SLOT_${slot.time}`, title: slot.time, description: "Available" }));
+    const rows = page.map((slot) => ({ id: `${prefix}_SLOT_${slot.time}`, title: `🕒 ${slot.time}`, description: "Available appointment" }));
     if (available.length > offset + 8) rows.push({ id: `${prefix}_SLOTS_MORE_${offset + 8}`, title: "More times" });
     rows.push({ id: "BACK", title: "Back" });
     await save(session, mode === "booking" ? "BOOKING_TIME" : "RESCHEDULE_TIME", context);
-    return msg.list("Select an available appointment time.", rows, "Select time");
+    return msg.list("Choose an available appointment time.", rows, "🕒 Select Time");
   }
 
   function appointmentSummary(appointment) {
@@ -124,9 +126,9 @@ function createConversationOrchestrator(deps = {}) {
     return msg.buttons(
       `Review your appointment:\n\nDistrict: ${context.district}\nPatient: ${context.fullName}\nPhone: ${maskedPhone(context.bookingPhone)}\nDepartment: ${context.department || context.reason}\nClinic: ${context.locationName}\nDate: ${context.date}\nTime: ${context.time}\nConsent: Yes\n\nConfirm these details?`,
       [
-        { id: "CONFIRM_BOOKING", title: "Confirm Booking" },
-        { id: "BACK", title: "Back" },
-        { id: "MENU_MAIN", title: "Main Menu" }
+        { id: "CONFIRM_BOOKING", title: "✅ Confirm Booking" },
+        { id: "BACK", title: "⬅️ Back" },
+        { id: "MENU_MAIN", title: "🏠 Main Menu" }
       ]
     );
   }
@@ -192,8 +194,8 @@ function createConversationOrchestrator(deps = {}) {
       return { body: `${tr(lang, "emergency")}${hotline ? `\n\nClinic Hotline: ${hotline}` : ""}` };
     }
 
-    if (upperAction === "MENU_BOOK" || (session.state === "MAIN_MENU" && /^(1|book|book appointment)$/i.test(input))) return locationMenu(session, "booking");
-    if (upperAction === "MENU_MANAGE" || (session.state === "MAIN_MENU" && /^(2|manage|manage appointment)$/i.test(input))) return manageAppointment(session, phone);
+    if (upperAction === "MENU_BOOK" || (session.state === "MAIN_MENU" && /^(book|book appointment)$/i.test(input))) return locationMenu(session, "booking");
+    if (upperAction === "MENU_MANAGE" || (session.state === "MAIN_MENU" && /^(manage|manage appointment)$/i.test(input))) return manageAppointment(session, phone);
     if (upperAction === "MENU_UPLOAD" || (session.state === "MAIN_MENU" && /^(upload|upload document|medical document|report)$/i.test(input))) {
       const portal = require("../config/env").config.frontendUrl;
       return msg.buttons(
@@ -205,14 +207,14 @@ function createConversationOrchestrator(deps = {}) {
       await save(session, "LOOKUP_ID", {});
       return { body: "Enter your appointment ID. It will be verified against this WhatsApp number." };
     }
-    if (upperAction === "MENU_CLINIC" || (session.state === "MAIN_MENU" && /^(3|clinic|location)$/i.test(input))) {
+    if (upperAction === "MENU_CLINIC" || (session.state === "MAIN_MENU" && /^(clinic|location)$/i.test(input))) {
       const locations = await d.locationService.listLocations();
       return { body: `Clinic locations:\n\n${locations.map((location) => `${location.city}: ${location.clinicName} — ${location.status}`).join("\n")}` };
     }
-    if (upperAction === "MENU_PROFILE" || upperAction === "MENU_TREATMENTS" || (session.state === "MAIN_MENU" && /^(4|doctor|profile)$/i.test(input))) {
+    if (upperAction === "MENU_PROFILE" || upperAction === "MENU_TREATMENTS" || (session.state === "MAIN_MENU" && /^(doctor|profile)$/i.test(input))) {
       return { body: "Dr. Sohaib is a specialist physician and surgeon. Consultation schedules depend on the selected active clinic." };
     }
-    if (upperAction === "MENU_STAFF" || (session.state === "MAIN_MENU" && /^(6|staff|human)$/i.test(input))) {
+    if (upperAction === "MENU_STAFF" || (session.state === "MAIN_MENU" && /^(staff|human)$/i.test(input))) {
       session.humanRequired = true;
       session.aiPaused = true;
       await save(session, "STAFF_HANDOVER", {});
@@ -265,7 +267,7 @@ function createConversationOrchestrator(deps = {}) {
       await save(session, "BOOKING_PHONE", { ...session.context, fullName: input });
       return msg.buttons(
         `Use ${maskedPhone(phone)} as the appointment phone number?`,
-        [{ id: "BOOK_PHONE_CONFIRM", title: "Use this number" }, { id: "MENU_MAIN", title: "Main Menu" }]
+        [{ id: "BOOK_PHONE_CONFIRM", title: "✅ Use This Number" }, { id: "MENU_MAIN", title: "🏠 Main Menu" }]
       );
     }
 
@@ -276,14 +278,13 @@ function createConversationOrchestrator(deps = {}) {
       }
       await save(session, "BOOKING_REASON", { ...session.context, bookingPhone: selectedPhone });
       return msg.list(tr(lang, "reason"), consultationReasons.map((reason, index) => ({
-        id: `BOOK_REASON_${index}`, title: reason.slice(0, 24)
-      })), "Department");
+        id: `BOOK_REASON_${index}`, title: `${departmentIcons[index]} ${reason}`.slice(0, 24)
+      })), "🩺 Select Department");
     }
 
     if (upperAction.startsWith("BOOK_REASON_") || session.state === "BOOKING_REASON") {
       let reason = input;
       if (upperAction.startsWith("BOOK_REASON_")) reason = consultationReasons[Number(action.slice("BOOK_REASON_".length))];
-      else if (/^\d+$/.test(input) && consultationReasons[Number(input) - 1]) reason = consultationReasons[Number(input) - 1];
       if (!reason || reason.length > 1000) return { body: "Select a displayed reason or type a short consultation reason." };
       await save(session, "BOOKING_DATE", { ...session.context, reason, department: reason });
       return dateMenu(session, "booking");
