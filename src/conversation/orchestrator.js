@@ -90,6 +90,11 @@ function createConversationOrchestrator(deps = {}) {
     return `Appointment ID: ${appointment.appointmentId}\nToken: ${appointment.tokenNumber}\nDate: ${appointment.date}\nTime: ${appointment.time}\nStatus: ${appointment.status}\nLocation: ${appointment.locationSnapshot?.clinicName || "Dr. Sohaib Clinic"}, ${appointment.locationSnapshot?.city || ""}`;
   }
 
+  function maskedPhone(phone) {
+    const value = String(phone || "");
+    return value.length > 7 ? `${value.slice(0, 4)}****${value.slice(-3)}` : "your WhatsApp number";
+  }
+
   async function manageAppointment(session, phone, appointment) {
     let selected = appointment;
     if (!selected) {
@@ -117,7 +122,7 @@ function createConversationOrchestrator(deps = {}) {
     const context = session.context || {};
     await save(session, "BOOKING_REVIEW", context);
     return msg.buttons(
-      `Review your appointment:\n\nPatient: ${context.fullName}\nClinic: ${context.locationName}\nDate: ${context.date}\nTime: ${context.time}\nReason: ${context.reason}\nConsent: Yes\n\nConfirm these details?`,
+      `Review your appointment:\n\nDistrict: ${context.district}\nPatient: ${context.fullName}\nPhone: ${maskedPhone(context.bookingPhone)}\nDepartment: ${context.department || context.reason}\nClinic: ${context.locationName}\nDate: ${context.date}\nTime: ${context.time}\nConsent: Yes\n\nConfirm these details?`,
       [
         { id: "CONFIRM_BOOKING", title: "Confirm Booking" },
         { id: "BACK", title: "Back" },
@@ -189,6 +194,13 @@ function createConversationOrchestrator(deps = {}) {
 
     if (upperAction === "MENU_BOOK" || (session.state === "MAIN_MENU" && /^(1|book|book appointment)$/i.test(input))) return locationMenu(session, "booking");
     if (upperAction === "MENU_MANAGE" || (session.state === "MAIN_MENU" && /^(2|manage|manage appointment)$/i.test(input))) return manageAppointment(session, phone);
+    if (upperAction === "MENU_UPLOAD" || (session.state === "MAIN_MENU" && /^(upload|upload document|medical document|report)$/i.test(input))) {
+      const portal = require("../config/env").config.frontendUrl;
+      return msg.buttons(
+        `Upload PDF, JPEG or PNG medical documents through the clinic's secure upload form. Open ${portal} and select Upload Reports. Link the document using your appointment ID and phone number.`,
+        [{ id: "MENU_MAIN", title: "Main Menu" }]
+      );
+    }
     if (upperAction === "MANAGE_LOOKUP" || /^lookup$/i.test(input)) {
       await save(session, "LOOKUP_ID", {});
       return { body: "Enter your appointment ID. It will be verified against this WhatsApp number." };
@@ -211,8 +223,12 @@ function createConversationOrchestrator(deps = {}) {
       const locationId = upperAction.startsWith("BOOK_LOCATION_") ? action.slice("BOOK_LOCATION_".length) : input;
       try {
         const location = await d.locationService.getBookableLocation(locationId);
-        await save(session, "BOOKING_DATE", { locationId: location.code, locationName: `${location.clinicName}, ${location.city}` });
-        return dateMenu(session, "booking");
+        await save(session, "BOOKING_NAME", {
+          locationId: location.code,
+          locationName: `${location.clinicName}, ${location.city}`,
+          district: location.city
+        });
+        return { body: `District selected: ${location.city}.\n\n${tr(lang, "name")}` };
       } catch {
         return { body: "That clinic selection is invalid or is no longer accepting bookings. Type BACK or select an active clinic." };
       }
@@ -237,16 +253,31 @@ function createConversationOrchestrator(deps = {}) {
       const time = upperAction.startsWith("BOOK_SLOT_") ? action.slice("BOOK_SLOT_".length) : input;
       const slots = await d.availabilityService.getAvailableSlots(session.context.locationId, session.context.date);
       if (!slots.some((slot) => slot.time === time && slot.available)) return { body: "That time is invalid, blocked, expired, or was just booked. Select another displayed time." };
-      await save(session, "BOOKING_NAME", { ...session.context, time });
-      return { body: tr(lang, "name") };
+      await save(session, "BOOKING_CONSENT", { ...session.context, time });
+      return msg.buttons(
+        `${require("../config/env").config.appointmentConsent.text} Do you consent?`,
+        [{ id: "BOOK_CONSENT_YES", title: "Yes, I consent" }, { id: "BOOK_CONSENT_NO", title: "No" }, { id: "MENU_MAIN", title: "Main Menu" }]
+      );
     }
 
     if (session.state === "BOOKING_NAME") {
       if (input.length < 2 || input.length > 160) return { body: tr(lang, "invalidName") };
-      await save(session, "BOOKING_REASON", { ...session.context, fullName: input });
+      await save(session, "BOOKING_PHONE", { ...session.context, fullName: input });
+      return msg.buttons(
+        `Use ${maskedPhone(phone)} as the appointment phone number?`,
+        [{ id: "BOOK_PHONE_CONFIRM", title: "Use this number" }, { id: "MENU_MAIN", title: "Main Menu" }]
+      );
+    }
+
+    if (session.state === "BOOKING_PHONE") {
+      const selectedPhone = upperAction === "BOOK_PHONE_CONFIRM" ? phone : normalizePhone(input);
+      if (!selectedPhone || selectedPhone !== phone) {
+        return { body: "For security, the appointment phone must match this WhatsApp number. Select Use this number." };
+      }
+      await save(session, "BOOKING_REASON", { ...session.context, bookingPhone: selectedPhone });
       return msg.list(tr(lang, "reason"), consultationReasons.map((reason, index) => ({
         id: `BOOK_REASON_${index}`, title: reason.slice(0, 24)
-      })), "Select reason");
+      })), "Department");
     }
 
     if (upperAction.startsWith("BOOK_REASON_") || session.state === "BOOKING_REASON") {
@@ -254,18 +285,15 @@ function createConversationOrchestrator(deps = {}) {
       if (upperAction.startsWith("BOOK_REASON_")) reason = consultationReasons[Number(action.slice("BOOK_REASON_".length))];
       else if (/^\d+$/.test(input) && consultationReasons[Number(input) - 1]) reason = consultationReasons[Number(input) - 1];
       if (!reason || reason.length > 1000) return { body: "Select a displayed reason or type a short consultation reason." };
-      await save(session, "BOOKING_CONSENT", { ...session.context, reason });
-      return msg.buttons(
-        `${require("../config/env").config.appointmentConsent.text} Do you consent?`,
-        [{ id: "BOOK_CONSENT_YES", title: "Yes, I consent" }, { id: "BOOK_CONSENT_NO", title: "No" }, { id: "MENU_MAIN", title: "Main Menu" }]
-      );
+      await save(session, "BOOKING_DATE", { ...session.context, reason, department: reason });
+      return dateMenu(session, "booking");
     }
 
     if (session.state === "BOOKING_CONSENT") {
       if (upperAction === "BOOK_CONSENT_NO" || /^(no|decline)$/i.test(input)) {
         await d.appointmentService.recordConsentDecision({
           fullName: session.context.fullName,
-          phone,
+          phone: session.context.bookingPhone || phone,
           consentGiven: false,
           consentTextVersion: require("../config/env").config.appointmentConsent.version,
           preferredLanguage: lang

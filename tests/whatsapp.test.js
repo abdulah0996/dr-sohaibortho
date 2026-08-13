@@ -86,12 +86,17 @@ async function reachBookingReview(phone = "+923001234567") {
   let reply = await handleIncomingMessage({ phoneE164: phone, text: "Book Appointment", replyId: "MENU_BOOK", messageId: "direct-book" });
   const locationId = reply.sections[0].rows.find((row) => row.id.startsWith("BOOK_LOCATION_")).id;
   reply = await handleIncomingMessage({ phoneE164: phone, text: "Clinic", replyId: locationId, messageId: "direct-location" });
+  assert.match(reply.body, /District selected/i);
+  reply = await handleIncomingMessage({ phoneE164: phone, text: "WhatsApp Test Patient", messageId: "direct-name" });
+  assert.equal(reply.kind, "buttons");
+  reply = await handleIncomingMessage({ phoneE164: phone, text: "Use this number", replyId: "BOOK_PHONE_CONFIRM", messageId: "direct-phone" });
+  assert.equal(reply.buttonText, "Department");
+  reply = await handleIncomingMessage({ phoneE164: phone, text: "General", replyId: "BOOK_REASON_0", messageId: "direct-reason" });
   const dateId = reply.sections[0].rows.find((row) => row.id.startsWith("BOOK_DATE_")).id;
   reply = await handleIncomingMessage({ phoneE164: phone, text: "Date", replyId: dateId, messageId: "direct-date" });
   const slotId = reply.sections[0].rows.find((row) => row.id.startsWith("BOOK_SLOT_")).id;
-  await handleIncomingMessage({ phoneE164: phone, text: "Time", replyId: slotId, messageId: "direct-slot" });
-  await handleIncomingMessage({ phoneE164: phone, text: "WhatsApp Test Patient", messageId: "direct-name" });
-  await handleIncomingMessage({ phoneE164: phone, text: "General", replyId: "BOOK_REASON_0", messageId: "direct-reason" });
+  reply = await handleIncomingMessage({ phoneE164: phone, text: "Time", replyId: slotId, messageId: "direct-slot" });
+  assert.equal(reply.kind, "buttons");
   reply = await handleIncomingMessage({ phoneE164: phone, text: "Yes", replyId: "BOOK_CONSENT_YES", messageId: "direct-consent" });
   assert.equal(reply.kind, "buttons");
   const session = await ConversationSession.findOne({ phoneE164: phone });
@@ -144,6 +149,14 @@ test("webhook verification, signatures, text and Book Appointment reply IDs work
   const session = await waitFor(() => ConversationSession.findOne({ phoneE164: "+923001234567", state: "BOOKING_LOCATION" }));
   assert.ok(session);
   await waitFor(() => metaRequests.some((request) => request.payload.interactive?.action?.sections?.[0]?.rows?.some((row) => row.id.startsWith("BOOK_LOCATION_"))));
+});
+
+test("main menu offers secure medical document upload guidance", async () => {
+  const menu = await handleIncomingMessage({ phoneE164: "+923001234567", text: "Hi", messageId: "upload-menu" });
+  assert.ok(menu.sections[0].rows.some((row) => row.id === "MENU_UPLOAD"));
+  const reply = await handleIncomingMessage({ phoneE164: "+923001234567", text: "Upload Medical Document", replyId: "MENU_UPLOAD", messageId: "upload-choice" });
+  assert.match(reply.body, /PDF, JPEG or PNG/);
+  assert.match(reply.body, /secure upload form/);
 });
 
 test("invalid and expired WhatsApp conversation selections fail safely", async () => {

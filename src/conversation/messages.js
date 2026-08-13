@@ -6,6 +6,7 @@ function languageMessage() { return buttons("Please select your language.\nبر�
 function mainMenu(language) { return list(tr(language, "welcome"), [
   { id: "MENU_BOOK", title: language === "ur" ? "اپائنٹمنٹ بک کریں" : "Book Appointment" },
   { id: "MENU_MANAGE", title: language === "ur" ? "اپائنٹمنٹ سنبھالیں" : "Manage Appointment" },
+  { id: "MENU_UPLOAD", title: language === "ur" ? "میڈیکل رپورٹ اپ لوڈ" : "Upload Medical Document" },
   { id: "MENU_CLINIC", title: language === "ur" ? "کلینک کی معلومات" : "Clinic Information" },
   { id: "MENU_TREATMENTS", title: language === "ur" ? "علاج کی معلومات" : "Treatment Information" },
   { id: "MENU_PROFILE", title: language === "ur" ? "ڈاکٹر کا تعارف" : "Doctor Profile" },
