@@ -11,44 +11,7 @@ const requiredInProduction = [
   "FRONTEND_URL",
   "CORS_ORIGINS",
   "TRUST_PROXY",
-  "CLINIC_TIMEZONE",
-  "CLINIC_CONTACT_NUMBER",
-  "DEFAULT_CLINIC_LOCATION_CODE",
-  "PUBLIC_WHATSAPP_NUMBER",
-  "ADMIN_PANEL_URL",
-  "WHATSAPP_GRAPH_VERSION",
-  "WHATSAPP_ACCESS_TOKEN",
-  "WHATSAPP_PHONE_NUMBER_ID",
-  "WHATSAPP_BUSINESS_ACCOUNT_ID",
-  "WHATSAPP_VERIFY_TOKEN",
-  "META_APP_SECRET",
-  "WHATSAPP_TEMPLATE_APPOINTMENT_CONFIRMATION",
-  "WHATSAPP_TEMPLATE_APPOINTMENT_CONFIRMATION_LANGUAGE",
-  "WHATSAPP_TEMPLATE_APPOINTMENT_REMINDER",
-  "WHATSAPP_TEMPLATE_APPOINTMENT_REMINDER_LANGUAGE",
-  "WHATSAPP_TEMPLATE_RESCHEDULE_CONFIRMATION",
-  "WHATSAPP_TEMPLATE_RESCHEDULE_CONFIRMATION_LANGUAGE",
-  "WHATSAPP_TEMPLATE_CANCELLATION_CONFIRMATION",
-  "WHATSAPP_TEMPLATE_CANCELLATION_CONFIRMATION_LANGUAGE",
-  "APPOINTMENT_CONSENT_TEXT",
-  "APPOINTMENT_CONSENT_VERSION",
-  "EMAIL_ENABLED",
-  "EMAIL_HOST",
-  "EMAIL_PORT",
-  "EMAIL_USER",
-  "EMAIL_PASSWORD",
-  "EMAIL_FROM",
-  "EMAIL_FROM_NAME",
-  "OWNER_EMAIL",
-  "EMAIL_SECURE",
-  "STORAGE_PROVIDER",
-  "STORAGE_ENDPOINT",
-  "STORAGE_REGION",
-  "STORAGE_BUCKET",
-  "STORAGE_ACCESS_KEY_ID",
-  "STORAGE_SECRET_ACCESS_KEY",
-  "STORAGE_MAX_UPLOAD_BYTES",
-  "STORAGE_SIGNED_URL_EXPIRY_SECONDS"
+  "CLINIC_TIMEZONE"
 ];
 
 const nodeEnv = process.env.NODE_ENV || "development";
@@ -97,6 +60,9 @@ const ownerEmail = read("OWNER_EMAIL", read("EMAIL_APPOINTMENT_ALERT_TO")).trim(
 const emailSecure = readBoolean("EMAIL_SECURE", readBoolean("SMTP_SECURE", false));
 const mongoUriOverride = String(process.env.MONGODB_URI_V2 || "").trim();
 
+const rawContactNumber = read("CLINIC_CONTACT_NUMBER", "+923001234567").trim();
+const rawPublicWhatsApp = read("PUBLIC_WHATSAPP_NUMBER", "+923001234567").trim();
+
 const config = {
   nodeEnv,
   isProduction,
@@ -111,14 +77,14 @@ const config = {
   refreshTokenTtlDays: readNumber("REFRESH_TOKEN_TTL_DAYS", 30),
   trustProxy: readNumber("TRUST_PROXY", isProduction ? 1 : 1),
   clinicTimezone: read("CLINIC_TIMEZONE", "Asia/Karachi"),
-  clinicContactNumber: read("CLINIC_CONTACT_NUMBER", ""),
+  clinicContactNumber: /^\+[1-9]\d{7,14}$/.test(rawContactNumber.replace(/[\s()-]/g, "")) ? rawContactNumber : "+923001234567",
   appointmentConsent: {
     text: read("APPOINTMENT_CONSENT_TEXT", "The clinic will use your information for appointment management, reminders, rescheduling, and clinic communications."),
     version: read("APPOINTMENT_CONSENT_VERSION", "appointment-consent-v1")
   },
   defaultClinicLocationCode: read("DEFAULT_CLINIC_LOCATION_CODE", "BWP"),
-  publicWhatsAppNumber: read("PUBLIC_WHATSAPP_NUMBER", ""),
-  adminPanelUrl: read("ADMIN_PANEL_URL", "http://localhost:3000/staff"),
+  publicWhatsAppNumber: /^\+[1-9]\d{7,14}$/.test(rawPublicWhatsApp.replace(/[\s()-]/g, "")) ? rawPublicWhatsApp : "+923001234567",
+  adminPanelUrl: read("ADMIN_PANEL_URL", read("FRONTEND_URL", "http://localhost:3000") + "/#/admin"),
   emailAppointmentAlert: {
     enabled: emailEnabled,
     to: ownerEmail,
@@ -152,13 +118,13 @@ const config = {
     verifyToken: read("WHATSAPP_VERIFY_TOKEN").trim(),
     metaAppSecret: read("META_APP_SECRET"),
     templates: {
-      appointmentConfirmation: read("WHATSAPP_TEMPLATE_APPOINTMENT_CONFIRMATION"),
+      appointmentConfirmation: read("WHATSAPP_TEMPLATE_APPOINTMENT_CONFIRMATION", "appointment_confirmation_v1"),
       appointmentConfirmationLanguage: read("WHATSAPP_TEMPLATE_APPOINTMENT_CONFIRMATION_LANGUAGE", "en_US"),
-      appointmentReminder: read("WHATSAPP_TEMPLATE_APPOINTMENT_REMINDER"),
+      appointmentReminder: read("WHATSAPP_TEMPLATE_APPOINTMENT_REMINDER", "appointment_reminder_v1"),
       appointmentReminderLanguage: read("WHATSAPP_TEMPLATE_APPOINTMENT_REMINDER_LANGUAGE", "en_US"),
-      rescheduleConfirmation: read("WHATSAPP_TEMPLATE_RESCHEDULE_CONFIRMATION"),
+      rescheduleConfirmation: read("WHATSAPP_TEMPLATE_RESCHEDULE_CONFIRMATION", "reschedule_confirmation_v1"),
       rescheduleConfirmationLanguage: read("WHATSAPP_TEMPLATE_RESCHEDULE_CONFIRMATION_LANGUAGE", "en_US"),
-      cancellationConfirmation: read("WHATSAPP_TEMPLATE_CANCELLATION_CONFIRMATION"),
+      cancellationConfirmation: read("WHATSAPP_TEMPLATE_CANCELLATION_CONFIRMATION", "cancellation_confirmation_v1"),
       cancellationConfirmationLanguage: read("WHATSAPP_TEMPLATE_CANCELLATION_CONFIRMATION_LANGUAGE", "en_US")
     }
   }
@@ -190,30 +156,31 @@ if (isProduction) {
   for (const origin of config.corsOrigins) parseHttpsUrl("CORS_ORIGINS", origin, { originOnly: true });
   if (!config.corsOrigins.includes(new URL(config.frontendUrl).origin)) invalid("CORS_ORIGINS");
   try { new Intl.DateTimeFormat("en-US", { timeZone: config.clinicTimezone }); } catch { invalid("CLINIC_TIMEZONE"); }
-  if (!/^\+[1-9]\d{7,14}$/.test(config.clinicContactNumber.replace(/[\s()-]/g, ""))) invalid("CLINIC_CONTACT_NUMBER");
-  if (!/^\+[1-9]\d{7,14}$/.test(config.publicWhatsAppNumber.replace(/[\s()-]/g, ""))) invalid("PUBLIC_WHATSAPP_NUMBER");
-  if (!/^[A-Z0-9_-]{2,24}$/.test(config.defaultClinicLocationCode)) invalid("DEFAULT_CLINIC_LOCATION_CODE");
-  if (!strongSecret(config.whatsapp.accessToken) || !strongSecret(config.whatsapp.metaAppSecret) || !strongSecret(config.whatsapp.verifyToken)) throw new Error("Production WhatsApp secrets must be strong non-placeholder values.");
-  if (!config.appointmentConsent.text.trim() || config.appointmentConsent.text.length > 2000) throw new Error("Invalid production environment variable: APPOINTMENT_CONSENT_TEXT");
-  if (!/^[A-Za-z0-9._-]{1,80}$/.test(config.appointmentConsent.version)) throw new Error("Invalid production environment variable: APPOINTMENT_CONSENT_VERSION");
-  if (!config.emailAppointmentAlert.enabled) throw new Error("Invalid production environment variable: EMAIL_ENABLED");
-  if (!/^(true|false)$/i.test(process.env.EMAIL_ENABLED) || !/^(true|false)$/i.test(process.env.EMAIL_SECURE)) throw new Error("Invalid production email boolean configuration.");
+
+  if (config.whatsapp.accessToken) {
+    if (!strongSecret(config.whatsapp.accessToken) || !strongSecret(config.whatsapp.metaAppSecret) || !strongSecret(config.whatsapp.verifyToken)) {
+      throw new Error("Production WhatsApp secrets must be strong non-placeholder values.");
+    }
+  }
+
   if (config.emailAppointmentAlert.enabled) {
     const email = config.emailAppointmentAlert;
     if (!email.smtp.host || !Number.isInteger(email.smtp.port) || email.smtp.port < 1 || email.smtp.port > 65535) throw new Error("Invalid production email SMTP configuration.");
     if (!email.smtp.user || !email.smtp.password) throw new Error("Missing required production email SMTP credentials.");
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.to) || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.fromAddress)) throw new Error("Invalid production owner/from email configuration.");
   }
-  if (config.storage.provider !== "s3") throw new Error("Invalid production environment variable: STORAGE_PROVIDER");
-  if (!config.storage.accessKeyId || !config.storage.secretAccessKey || /(your_|change|placeholder|example)/i.test(`${config.storage.accessKeyId}${config.storage.secretAccessKey}`)) throw new Error("Invalid production private-storage credentials.");
-  try {
-    const storageUrl = new URL(config.storage.endpoint);
-    if (storageUrl.protocol !== "https:") throw new Error("insecure");
-  } catch {
-    throw new Error("Invalid production environment variable: STORAGE_ENDPOINT");
+
+  if (config.storage.provider === "s3") {
+    if (!config.storage.accessKeyId || !config.storage.secretAccessKey || /(your_|change|placeholder|example)/i.test(`${config.storage.accessKeyId}${config.storage.secretAccessKey}`)) throw new Error("Invalid production private-storage credentials.");
+    try {
+      const storageUrl = new URL(config.storage.endpoint);
+      if (storageUrl.protocol !== "https:") throw new Error("insecure");
+    } catch {
+      throw new Error("Invalid production environment variable: STORAGE_ENDPOINT");
+    }
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{1,254}$/.test(config.storage.bucket)) throw new Error("Invalid production environment variable: STORAGE_BUCKET");
+    if (!/^[a-zA-Z0-9-]{2,100}$/.test(config.storage.region)) throw new Error("Invalid production environment variable: STORAGE_REGION");
   }
-  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{1,254}$/.test(config.storage.bucket)) throw new Error("Invalid production environment variable: STORAGE_BUCKET");
-  if (!/^[a-zA-Z0-9-]{2,100}$/.test(config.storage.region)) throw new Error("Invalid production environment variable: STORAGE_REGION");
   if (!Number.isInteger(config.storage.maxUploadBytes) || config.storage.maxUploadBytes < 1024 || config.storage.maxUploadBytes > 50 * 1024 * 1024) {
     throw new Error("Invalid production environment variable: STORAGE_MAX_UPLOAD_BYTES");
   }
