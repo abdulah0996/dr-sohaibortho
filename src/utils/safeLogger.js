@@ -13,7 +13,9 @@ function safeError(error) {
     name: sanitizeText(error?.name || "Error"),
     code: sanitizeText(error?.code || "UNEXPECTED_ERROR")
   };
-  if (!config.isProduction) result.message = sanitizeText(error?.message || error);
+  const message = String(error?.message || error || "");
+  const safeProductionConfigurationMessage = /^(?:Missing required production environment variable: [A-Z0-9_ ]+|Invalid production environment variable: [A-Z0-9_]+|Production authentication secrets must be distinct strong values of at least 32 characters\.|Production WhatsApp secrets must be strong non-placeholder values\.|Invalid production email boolean configuration\.|Invalid production email SMTP configuration\.|Missing required production email SMTP credentials\.|Invalid production owner\/from email configuration\.|Invalid production private-storage credentials\.|Unsafe production TLS configuration is not allowed\.)$/.test(message);
+  if (!config.isProduction || safeProductionConfigurationMessage) result.message = sanitizeText(message);
   return result;
 }
 

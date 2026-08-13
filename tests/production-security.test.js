@@ -171,6 +171,11 @@ test("safe logging removes database URIs, bearer tokens and secret assignments",
   const prior = config.isProduction;
   config.isProduction = true;
   assert.equal("message" in safeError(new Error(input)), false);
+  assert.equal(
+    safeError(new Error("Missing required production environment variable: JWT_ACCESS_SECRET")).message,
+    "Missing required production environment variable: JWT_ACCESS_SECRET"
+  );
+  assert.equal("message" in safeError(new Error("Database failed for internal reason")), false);
   config.isProduction = prior;
 });
 
