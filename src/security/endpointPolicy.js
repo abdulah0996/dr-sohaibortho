@@ -99,7 +99,9 @@ const GROUPS = Object.freeze([
       route("GET", "/", "staff_permission", ["reports.read"]), route("GET", "/appointment/:appointmentId", "staff_permission", ["reports.read"]),
       route("GET", "/:id/download", "staff_permission", ["reports.download"]), route("DELETE", "/:id", "staff_permission", ["reports.delete"]),
       route("GET", "/:id", "staff_permission", ["reports.read"]), route("PUT", "/:id/status", "staff_permission", ["reports.review"]),
-      route("PATCH", "/:id/status", "staff_permission", ["reports.review"])
+      route("PATCH", "/:id/status", "staff_permission", ["reports.review"]),
+      route("PUT", "/:id/notes", "staff_permission", ["reports.review"]),
+      route("PATCH", "/:id/notes", "staff_permission", ["reports.review"])
     ]
   },
   {

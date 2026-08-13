@@ -11,7 +11,7 @@ const { asyncHandler } = require("../utils/asyncHandler");
 const { AppError, badRequest, notFound } = require("../utils/errors");
 const { normalizePhone } = require("../utils/security");
 const { audit } = require("../services/auditService");
-const { lookupAppointment } = require("../services/appointmentService");
+const { lookupAppointment, findOrCreatePatient } = require("../services/appointmentService");
 const { getMedicalFileStorage } = require("../services/medicalFileStorage");
 const { validateMedicalFile, createReportId, reportDto } = require("../services/medicalFileService");
 const { config } = require("../config/env");
@@ -41,7 +41,7 @@ function reportConditions(id) {
 const uploadFieldsSchema = z.object({
   phone: z.string().min(7).max(40),
   reportTitle: z.string().min(2).max(200),
-  appointmentId: z.string().min(3).max(50),
+  appointmentId: z.string().max(50).optional().or(z.literal("")),
   documentType: z.enum(["mri", "xray", "prescription", "lab", "discharge", "other", "blood_test"]).optional(),
   notes: z.string().max(1000).optional().or(z.literal(""))
 }).strict();
@@ -54,8 +54,17 @@ router.post("/upload", publicFormLimiter, patientVerificationLimiter, multipartU
   if (!phoneE164) throw badRequest("Invalid report upload data.");
 
   const fileMetadata = validateMedicalFile(req.file);
-  const appt = await lookupAppointment({ reference: input.appointmentId, phone: phoneE164 });
-  const patient = appt.patient;
+
+  let appt = null;
+  let patient = null;
+
+  if (input.appointmentId && input.appointmentId.trim()) {
+    appt = await lookupAppointment({ reference: input.appointmentId, phone: phoneE164 });
+    patient = appt.patient;
+  } else {
+    patient = await findOrCreatePatient({ phone: phoneE164 });
+  }
+
   const storage = getMedicalFileStorage();
   let stored = false;
   let report;
@@ -66,9 +75,9 @@ router.post("/upload", publicFormLimiter, patientVerificationLimiter, multipartU
       reportId: createReportId(),
       patient: patient._id || patient,
       patientPhone: phoneE164,
-      appointmentId: appt.appointmentId,
-      tokenNumber: appt.tokenNumber,
-      appointment: appt._id,
+      appointmentId: appt ? appt.appointmentId : "",
+      tokenNumber: appt ? appt.tokenNumber : "",
+      appointment: appt ? appt._id : undefined,
       reportTitle: input.reportTitle,
       documentType: input.documentType || "other",
       ...fileMetadata,
@@ -138,10 +147,12 @@ router.get("/:id/download", requirePermission("reports.download"), asyncHandler(
   catch { throw notFound("Medical report not found"); }
   await audit({ actorType: "staff", action: "report.downloaded", entityType: "report", entityId: String(report._id), metadata: { fileSize: report.fileSize, mimeType: report.mimeType }, req });
   const safeAsciiName = report.originalFilename.replace(/[^a-zA-Z0-9._-]/g, "_");
+  const isInline = req.query.inline === "true" || req.query.disposition === "inline";
+  const dispositionType = isInline ? "inline" : "attachment";
   res.set({
     "Content-Type": report.mimeType,
     "Content-Length": String(report.fileSize),
-    "Content-Disposition": `attachment; filename="${safeAsciiName}"; filename*=UTF-8''${encodeURIComponent(report.originalFilename)}`,
+    "Content-Disposition": `${dispositionType}; filename="${safeAsciiName}"; filename*=UTF-8''${encodeURIComponent(report.originalFilename)}`,
     "Cache-Control": "private, no-store, max-age=0",
     "X-Content-Type-Options": "nosniff"
   });
@@ -195,5 +206,19 @@ const updateStatusHandler = asyncHandler(async (req, res) => {
 
 router.put("/:id/status", requirePermission("reports.review"), updateStatusHandler);
 router.patch("/:id/status", requirePermission("reports.review"), updateStatusHandler);
+
+const updateNotesHandler = asyncHandler(async (req, res) => {
+  const parsed = z.object({ notes: z.string().max(1000) }).strict().safeParse(req.body);
+  if (!parsed.success) throw badRequest("Invalid report note.");
+  const report = await MedicalReport.findOne({ $or: reportConditions(req.params.id), fileStatus: "active" });
+  if (!report) throw notFound("Report not found");
+  report.notes = parsed.data.notes;
+  await report.save();
+  await audit({ actorType: "staff", action: "report.note_added", entityType: "report", entityId: String(report._id), req });
+  res.json({ success: true, report: reportDto(report), message: "Report note updated successfully." });
+});
+
+router.put("/:id/notes", requirePermission("reports.review"), updateNotesHandler);
+router.patch("/:id/notes", requirePermission("reports.review"), updateNotesHandler);
 
 module.exports = router;

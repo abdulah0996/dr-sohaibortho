@@ -23,6 +23,7 @@ let mongod;
 function productionEnvironment(overrides = {}) {
   return {
     ...process.env,
+    DOTENV_CONFIG_PATH: path.join(__dirname, "nonexistent.env"),
     NODE_ENV: "production",
     PORT: "3999",
     MONGODB_URI: "mongodb://dbuser:UltraSecretDatabasePassword123!@127.0.0.1:1/clinic?authSource=admin",

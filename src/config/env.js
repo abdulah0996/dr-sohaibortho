@@ -1,4 +1,8 @@
-require("dotenv").config();
+if (process.env.DOTENV_CONFIG_PATH) {
+  require("dotenv").config({ path: process.env.DOTENV_CONFIG_PATH });
+} else {
+  require("dotenv").config();
+}
 
 const requiredInProduction = [
   "JWT_ACCESS_SECRET",

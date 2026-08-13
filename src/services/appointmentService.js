@@ -674,6 +674,7 @@ async function requestEarlierSlot(appointmentId, phone, notes) {
 
 module.exports = {
   createAppointment,
+  findOrCreatePatient,
   lookupAppointment,
   listAppointments,
   getAppointmentById,

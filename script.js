@@ -9,8 +9,10 @@
     activePhone: "",
     chatMessages: [],
     showMainMenuCard: false,
-    currentFlow: "idle",
-    currentStep: "initial_language",
+    currentFlow: "idle", // "idle" | "booking" | "manage" | "reschedule" | "cancel" | "upload_report"
+    currentStep: "initial_welcome",
+    bookingStepIndex: 0, // 1 to 6 for progress indicator
+    isChangingDetails: false,
     bookingState: {
       patientName: "",
       phoneNumber: "",
@@ -21,7 +23,8 @@
       dateLabel: "",
       time: "",
       timeLabel: "",
-      consentGiven: false
+      consentGiven: false,
+      idempotencyKey: ""
     },
     consentPolicy: null,
     uploadReportState: {
@@ -29,6 +32,12 @@
       typeLabel: "Medical Document"
     },
     managedAppointment: null,
+    rescheduleState: {
+      date: "",
+      dateLabel: "",
+      time: "",
+      timeLabel: ""
+    },
     conversationMode: "AI", // "AI" | "HUMAN"
     humanHandoverActive: false,
     adminTab: "dashboard",
@@ -48,22 +57,23 @@
 
   // Initial Chat Boot
   function initChat() {
+    const isUrdu = state.lang === "ur";
     state.chatMessages = [
       {
-        id: "msg_init_lang",
+        id: "msg_welcome",
         sender: "ai",
-        title: "Assalam-o-Alaikum 👋",
-        text: "Welcome to Dr. Sohaib's Appointment Assistant.\nPlease select your preferred language.",
-        quickReplies: [
-          { label: "English", action: "set_lang_en" },
-          { label: "اردو", action: "set_lang_ur" }
-        ],
+        title: isUrdu ? "👋 السلام علیکم!" : "👋 Assalam-o-Alaikum!",
+        text: isUrdu
+          ? "میں ڈاکٹر صہیب کا AI اپوائنٹمنٹ اسسٹنٹ ہوں۔\n\nمیں اپوائنٹمنٹ بک یا مینیج کرنے، کلینک کی معلومات دیکھنے، رپورٹس اپ لوڈ کرنے، یا عملے سے رابطہ قائم کرنے میں آپ کی مدد کر سکتا ہوں۔\n\nآج میں آپ کی کیا مدد کر سکتا ہوں؟"
+          : "I'm Dr. Shoaib's AI Appointment Assistant.\n\nI can help you book or manage an appointment, view clinic information, upload reports, or connect you with clinic staff.\n\nHow can I help you today?",
         time: "Now"
       }
     ];
-    state.showMainMenuCard = false;
+    state.showMainMenuCard = true;
     state.currentFlow = "idle";
-    state.currentStep = "initial_language";
+    state.currentStep = "main_menu";
+    state.bookingStepIndex = 0;
+    state.isChangingDetails = false;
   }
   initChat();
 
@@ -126,40 +136,90 @@
   }
 
   function loadAvailableDates(actionPrefix, title) {
-    pushMessage({ sender: "ai", text: "Checking the clinic schedule for available dates...", time: "Now" });
+    const isUrdu = state.lang === "ur";
+    pushMessage({ sender: "ai", text: isUrdu ? "دستیاب تاریخیں لوڈ کی جا رہی ہیں..." : "Checking available appointment dates...", time: "Now" });
     renderChatView();
     api.dates(state.bookingState.locationId || "BWP").then((response) => {
-      const dates = (response.dates || []).slice(0, 12);
+      const dates = (response.dates || []).slice(0, 10);
+      const backAction = actionPrefix === "reschedule" ? "action_view_managed" : (state.bookingState.appointmentType === "online" ? "back_to_type" : "back_to_city");
+      
+      const quickReplies = dates.map((entry) => ({
+        label: `📅 ${dateLabel(entry.date)}`,
+        action: `${actionPrefix}_date_${entry.date}_${dateLabel(entry.date)}`
+      }));
+      quickReplies.push({ label: isUrdu ? "⬅️ واپس" : "⬅️ Back", action: backAction });
+
       pushMessage({
-        sender: "ai", title,
-        text: dates.length ? "Please select an available date:" : "No appointment dates are currently available. Please contact clinic staff.",
-        quickReplies: dates.map((entry) => ({ label: dateLabel(entry.date), action: `${actionPrefix}_date_${entry.date}_${dateLabel(entry.date)}` })),
+        sender: "ai",
+        title: isUrdu ? "تاریخ منتخب کریں" : title,
+        text: dates.length
+          ? (isUrdu ? "براہ کرم دستیاب تاریخ کا انتخاب کریں:" : "Please select an available date:")
+          : (isUrdu ? "📅 اس وقت کوئی تاریخ دستیاب نہیں ہے۔" : "📅 No appointment dates are currently available."),
+        quickReplies: dates.length ? quickReplies : [
+          { label: isUrdu ? "🔄 دوبارہ چیک کریں" : "🔄 Check Again", action: "start_booking" },
+          { label: isUrdu ? "👤 عملے سے بات کریں" : "👤 Speak to Staff", action: "speak_to_staff" },
+          { label: isUrdu ? "🏠 مین مینو" : "🏠 Main Menu", action: "show_main_menu" }
+        ],
         time: "Now"
       });
       renderChatView();
     }).catch((error) => {
       showToast(error.message);
-      pushMessage({ sender: "ai", text: "Availability could not be loaded. Please try again or contact clinic staff.", time: "Now" });
+      pushMessage({
+        sender: "ai",
+        text: isUrdu ? "تاریخیں حاصل نہیں کی جا سکیں۔ براہ کرم دوبارہ کوشش کریں یا عملے سے رابطہ کریں۔" : "Availability could not be loaded. Please try again or contact clinic staff.",
+        quickReplies: [
+          { label: isUrdu ? "🔄 دوبارہ کوشش کریں" : "🔄 Try Again", action: "start_booking" },
+          { label: isUrdu ? "👤 عملے سے بات کریں" : "👤 Speak to Staff", action: "speak_to_staff" },
+          { label: isUrdu ? "🏠 مین مینو" : "🏠 Main Menu", action: "show_main_menu" }
+        ],
+        time: "Now"
+      });
       renderChatView();
     });
   }
 
   function loadAvailableTimes(actionPrefix, date) {
-    pushMessage({ sender: "ai", text: "Checking available appointment times...", time: "Now" });
+    const isUrdu = state.lang === "ur";
+    pushMessage({ sender: "ai", text: isUrdu ? "دستیاب اوقات چیک کیے جا رہے ہیں..." : "Checking available appointment times...", time: "Now" });
     renderChatView();
     api.slots(state.bookingState.locationId || "BWP", date).then((response) => {
       const slots = (response.slots || []).filter((slot) => slot.available);
+      const backAction = actionPrefix === "reschedule" ? "action_reschedule_appt" : "back_to_date";
+      
+      const quickReplies = slots.map((slot) => ({
+        label: `🕒 ${timeLabel(slot.time)}`,
+        action: `${actionPrefix}_time_${slot.time}_${timeLabel(slot.time)}`
+      }));
+      quickReplies.push({ label: isUrdu ? "⬅️ واپس" : "⬅️ Back", action: backAction });
+
       pushMessage({
         sender: "ai",
-        title: actionPrefix === "reschedule" ? "Select New Time Slot" : "Select Appointment Time",
-        text: slots.length ? "Please select an available appointment time:" : "No times remain available on this date. Please select another date.",
-        quickReplies: slots.map((slot) => ({ label: timeLabel(slot.time), action: `${actionPrefix}_time_${slot.time}_${timeLabel(slot.time)}` })),
+        title: actionPrefix === "reschedule"
+          ? (isUrdu ? "نیا وقت منتخب کریں" : "Select New Time Slot")
+          : (isUrdu ? "وقت منتخب کریں" : "Select Appointment Time"),
+        text: slots.length
+          ? (isUrdu ? "براہ کرم دستیاب وقت منتخب کریں:" : "Please select an available appointment time:")
+          : (isUrdu ? "اس تاریخ پر کوئی وقت دستیاب نہیں ہے۔ براہ کرم دوسری تاریخ منتخب کریں۔" : "No times remain available on this date. Please select another date."),
+        quickReplies: slots.length ? quickReplies : [
+          { label: isUrdu ? "📅 دوسری تاریخ چنیں" : "📅 Choose Another Date", action: actionPrefix === "reschedule" ? "action_reschedule_appt" : "back_to_date" },
+          { label: isUrdu ? "👤 عملے سے بات کریں" : "👤 Speak to Staff", action: "speak_to_staff" },
+          { label: isUrdu ? "🏠 مین مینو" : "🏠 Main Menu", action: "show_main_menu" }
+        ],
         time: "Now"
       });
       renderChatView();
     }).catch((error) => {
       showToast(error.message);
-      pushMessage({ sender: "ai", text: "Available times could not be loaded. Please select another date or contact clinic staff.", time: "Now" });
+      pushMessage({
+        sender: "ai",
+        text: isUrdu ? "وقت حاصل نہیں کیا جا سکا۔ براہ کرم دوسری تاریخ چنیں۔" : "Available times could not be loaded. Please select another date or contact clinic staff.",
+        quickReplies: [
+          { label: isUrdu ? "📅 دوسری تاریخ چنیں" : "📅 Choose Another Date", action: "back_to_date" },
+          { label: isUrdu ? "🏠 مین مینو" : "🏠 Main Menu", action: "show_main_menu" }
+        ],
+        time: "Now"
+      });
       renderChatView();
     });
   }
@@ -181,16 +241,17 @@
         pushMessage({ sender: "user", text: action === "set_lang_ur" ? "اردو" : "English", time: "Now" });
         pushMessage({
           sender: "ai",
-          text: isUrdu ? "آج میں آپ کی کیا مدد کر سکتا ہوں؟" : "How may I help you today?",
+          text: state.lang === "ur" ? "آج میں آپ کی کیا مدد کر سکتا ہوں؟" : "How can I help you today?",
           time: "Now"
         });
         state.showMainMenuCard = true;
         state.currentFlow = "idle";
         state.currentStep = "main_menu";
+        state.bookingStepIndex = 0;
         break;
 
       case "show_main_menu":
-        pushMessage({ sender: "user", text: "🏠 Main Menu", time: "Now" });
+        pushMessage({ sender: "user", text: isUrdu ? "🏠 مین مینو" : "🏠 Main Menu", time: "Now" });
         pushMessage({
           sender: "ai",
           title: isUrdu ? "مین مینو" : "Main Menu",
@@ -200,35 +261,122 @@
         state.showMainMenuCard = true;
         state.currentFlow = "idle";
         state.currentStep = "main_menu";
+        state.bookingStepIndex = 0;
+        state.isChangingDetails = false;
         break;
 
       case "start_booking":
         state.currentFlow = "booking";
         state.currentStep = "booking_name";
+        state.bookingStepIndex = 1;
         if (!options.silentUserMsg) {
           pushMessage({ sender: "user", text: isUrdu ? "📅 اپوائنٹمنٹ بک کریں" : "📅 Book Appointment", time: "Now" });
         }
         pushMessage({
           sender: "ai",
-          text: isUrdu ? "براہ کرم مریض کا مکمل نام درج کریں:" : "Please enter the patient's full name.",
+          title: isUrdu ? "قدم ۱ از ۶: مریض کا نام" : "Step 1 of 6: Patient Name",
+          text: isUrdu ? "👤 مریض کا مکمل نام کیا ہے؟" : "👤 What is the patient's full name?",
+          quickReplies: [
+            { label: isUrdu ? "⬅️ واپس" : "⬅️ Back", action: "show_main_menu" }
+          ],
           time: "Now"
         });
         break;
 
-      case "booking_type_in_person":
-        state.bookingState.appointmentType = "in_person";
-        pushMessage({ sender: "user", text: "🏥 In-Person Appointment", time: "Now" });
-        if (options.isChanging) { showBookingReview(); break; }
-        
-        state.currentStep = "booking_city";
+      case "back_to_name":
+        state.currentStep = "booking_name";
+        state.bookingStepIndex = 1;
         pushMessage({
           sender: "ai",
-          title: isUrdu ? "شہر کا انتخاب کریں" : "City Selection",
-          text: "Which clinic location would you like to visit?",
+          title: isUrdu ? "قدم ۱ از ۶: مریض کا نام" : "Step 1 of 6: Patient Name",
+          text: isUrdu ? "👤 مریض کا مکمل نام کیا ہے؟" : "👤 What is the patient's full name?",
           quickReplies: [
-            { label: "📍 Bahawalpur", action: "booking_city_bwp" },
-            { label: "📍 Bahawalnagar — Coming Soon", action: "booking_city_bwn" },
-            { label: "📍 Rahim Yar Khan — Coming Soon", action: "booking_city_ryk" }
+            { label: isUrdu ? "⬅️ واپس" : "⬅️ Back", action: "show_main_menu" }
+          ],
+          time: "Now"
+        });
+        break;
+
+      case "back_to_phone":
+        state.currentStep = "booking_phone";
+        state.bookingStepIndex = 2;
+        pushMessage({
+          sender: "ai",
+          title: isUrdu ? "قدم ۲ از ۶: فون نمبر" : "Step 2 of 6: Phone Number",
+          text: isUrdu ? "📞 براہ کرم اپنا موبائل یا واٹس ایپ نمبر درج کریں:\nمثال: 0300 1234567" : "📞 Please enter your mobile / WhatsApp number.\nExample: 0300 1234567",
+          quickReplies: [
+            { label: isUrdu ? "⬅️ واپس" : "⬅️ Back", action: "back_to_name" }
+          ],
+          time: "Now"
+        });
+        break;
+
+      case "back_to_type":
+        state.currentStep = "booking_type";
+        state.bookingStepIndex = 3;
+        pushMessage({
+          sender: "ai",
+          title: isUrdu ? "قدم ۳ از ۶: اپوائنٹمنٹ کی قسم" : "Step 3 of 6: Consultation Type",
+          text: isUrdu ? "🏥 آپ ڈاکٹر صہیب سے کیسے مشورہ کرنا چاہتے ہیں؟" : "🏥 How would you like to consult Dr. Shoaib?",
+          quickReplies: [
+            { label: isUrdu ? "🏥 ان پرسن (کلینک) اپوائنٹمنٹ" : "🏥 In-Person Appointment", action: "booking_type_in_person" },
+            { label: isUrdu ? "💻 آن لائن اپوائنٹمنٹ" : "💻 Online Appointment", action: "booking_type_online" },
+            { label: isUrdu ? "⬅️ واپس" : "⬅️ Back", action: "back_to_phone" }
+          ],
+          time: "Now"
+        });
+        break;
+
+      case "back_to_city":
+        state.currentStep = "booking_city";
+        state.bookingStepIndex = 4;
+        pushMessage({
+          sender: "ai",
+          title: isUrdu ? "قدم ۴ از ۶: کلینک کا مقام" : "Step 4 of 6: Clinic Location",
+          text: isUrdu ? "📍 کلینک کی جگہ منتخب کریں:" : "📍 Select Clinic Location:",
+          quickReplies: [
+            { label: isUrdu ? "📍 بہاولپور (اقبال ہسپتال)" : "📍 Bahawalpur (Iqbal Hospital)", action: "booking_city_bwp" },
+            { label: isUrdu ? "📍 بہاولنگر — جلد آ رہا ہے" : "📍 Bahawalnagar — Coming Soon", action: "booking_city_bwn" },
+            { label: isUrdu ? "📍 رحیم یار خان — جلد آ رہا ہے" : "📍 Rahim Yar Khan — Coming Soon", action: "booking_city_ryk" },
+            { label: isUrdu ? "⬅️ واپس" : "⬅️ Back", action: "back_to_type" }
+          ],
+          time: "Now"
+        });
+        break;
+
+      case "back_to_date":
+        state.currentStep = "booking_date";
+        state.bookingStepIndex = 5;
+        loadAvailableDates("booking", isUrdu ? "قدم ۵ از ۶: تاریخ منتخب کریں" : "Step 5 of 6: Choose Date");
+        break;
+
+      case "back_to_time":
+        state.currentStep = "booking_time";
+        state.bookingStepIndex = 6;
+        loadAvailableTimes("booking", state.bookingState.date);
+        break;
+
+      case "booking_type_in_person":
+        state.bookingState.appointmentType = "in_person";
+        pushMessage({ sender: "user", text: isUrdu ? "🏥 ان پرسن اپوائنٹمنٹ" : "🏥 In-Person Appointment", time: "Now" });
+        
+        if (state.isChangingDetails) {
+          state.isChangingDetails = false;
+          showBookingReview();
+          break;
+        }
+
+        state.currentStep = "booking_city";
+        state.bookingStepIndex = 4;
+        pushMessage({
+          sender: "ai",
+          title: isUrdu ? "قدم ۴ از ۶: کلینک کا مقام" : "Step 4 of 6: Clinic Location",
+          text: isUrdu ? "📍 آپ کون سے کلینک تشریف لانا چاہتے ہیں؟" : "📍 Which clinic location would you like to visit?",
+          quickReplies: [
+            { label: isUrdu ? "📍 بہاولپور (اقبال ہسپتال)" : "📍 Bahawalpur (Iqbal Hospital)", action: "booking_city_bwp" },
+            { label: isUrdu ? "📍 بہاولنگر — جلد آ رہا ہے" : "📍 Bahawalnagar — Coming Soon", action: "booking_city_bwn" },
+            { label: isUrdu ? "📍 رحیم یار خان — جلد آ رہا ہے" : "📍 Rahim Yar Khan — Coming Soon", action: "booking_city_ryk" },
+            { label: isUrdu ? "⬅️ واپس" : "⬅️ Back", action: "back_to_type" }
           ],
           time: "Now"
         });
@@ -236,60 +384,89 @@
 
       case "booking_type_online":
         state.bookingState.appointmentType = "online";
-        pushMessage({ sender: "user", text: "💻 Online Appointment", time: "Now" });
-        if (options.isChanging) { showBookingReview(); break; }
+        state.bookingState.city = "Bahawalpur";
+        state.bookingState.locationId = "BWP";
+        pushMessage({ sender: "user", text: isUrdu ? "💻 آن لائن اپوائنٹمنٹ" : "💻 Online Appointment", time: "Now" });
+        
+        if (state.isChangingDetails) {
+          state.isChangingDetails = false;
+          showBookingReview();
+          break;
+        }
 
         state.currentStep = "booking_date";
-        state.bookingState.locationId = "BWP";
-        loadAvailableDates("booking", "Select Consultation Date");
+        state.bookingStepIndex = 5;
+        loadAvailableDates("booking", isUrdu ? "قدم ۵ از ۶: آن لائن تاریخ منتخب کریں" : "Step 5 of 6: Choose Online Date");
         break;
 
       case "booking_city_bwp":
         state.bookingState.city = "Bahawalpur";
         state.bookingState.locationId = "BWP";
-        state.currentStep = "booking_date";
-        pushMessage({ sender: "user", text: "📍 Bahawalpur", time: "Now" });
+        pushMessage({ sender: "user", text: "📍 Bahawalpur (Iqbal Hospital)", time: "Now" });
         
-        if (options.isChanging) {
+        if (state.isChangingDetails) {
+          state.isChangingDetails = false;
           showBookingReview();
           break;
         }
 
-        loadAvailableDates("booking", "Select Appointment Date");
+        state.currentStep = "booking_date";
+        state.bookingStepIndex = 5;
+        loadAvailableDates("booking", isUrdu ? "قدم ۵ از ۶: تاریخ منتخب کریں" : "Step 5 of 6: Choose Date");
         break;
 
       case "booking_city_bwn":
       case "booking_city_ryk":
-        pushMessage({ sender: "user", text: action === "booking_city_bwn" ? "📍 Bahawalnagar — Coming Soon" : "📍 Rahim Yar Khan — Coming Soon", time: "Now" });
+        pushMessage({
+          sender: "user",
+          text: action === "booking_city_bwn"
+            ? (isUrdu ? "📍 بہاولنگر — جلد آ رہا ہے" : "📍 Bahawalnagar — Coming Soon")
+            : (isUrdu ? "📍 رحیم یار خان — جلد آ رہا ہے" : "📍 Rahim Yar Khan — Coming Soon"),
+          time: "Now"
+        });
         pushMessage({
           sender: "ai",
-          text: "This clinic location is coming soon. Please select Bahawalpur for an available appointment.",
+          text: isUrdu
+            ? "یہ کلینک جلد ہی شروع ہو رہا ہے۔ فی الحال اپوائنٹمنٹ کے لیے بہاولپور کا انتخاب کریں۔"
+            : "This clinic location is coming soon. Please select Bahawalpur for available appointment dates.",
           quickReplies: [
-            { label: "📍 Bahawalpur", action: "booking_city_bwp" }
+            { label: isUrdu ? "📍 بہاولپور (اقبال ہسپتال)" : "📍 Bahawalpur (Iqbal Hospital)", action: "booking_city_bwp" },
+            { label: isUrdu ? "⬅️ واپس" : "⬅️ Back", action: "back_to_type" }
           ],
           time: "Now"
         });
         break;
 
       case "change_name":
+        state.isChangingDetails = true;
         state.currentStep = "booking_name";
-        pushMessage({ sender: "ai", text: "What is the patient's full name?", time: "Now" });
+        pushMessage({
+          sender: "ai",
+          text: isUrdu ? "👤 مریض کا نیا مکمل نام درج کریں:" : "👤 Please enter the updated patient name:",
+          time: "Now"
+        });
         break;
 
       case "change_phone":
+        state.isChangingDetails = true;
         state.currentStep = "booking_phone";
-        pushMessage({ sender: "ai", text: "Please enter your phone number:", time: "Now" });
+        pushMessage({
+          sender: "ai",
+          text: isUrdu ? "📞 نیا فون نمبر درج کریں (مثال: 0300 1234567):" : "📞 Please enter your updated phone number (e.g. 0300 1234567):",
+          time: "Now"
+        });
         break;
 
       case "change_type":
+        state.isChangingDetails = true;
         state.currentStep = "booking_type";
         pushMessage({
           sender: "ai",
-          title: "💻 Appointment Type",
-          text: "How would you like to consult Dr. Sohaib?",
+          title: isUrdu ? "اپوائنٹمنٹ کی قسم تبدیل کریں" : "Change Consultation Type",
+          text: isUrdu ? "آپ ڈاکٹر صہیب سے کیسے مشورہ کرنا چاہتے ہیں؟" : "How would you like to consult Dr. Shoaib?",
           quickReplies: [
-            { label: "🏥 In-Person Appointment", action: "booking_type_in_person" },
-            { label: "💻 Online Appointment", action: "booking_type_online" }
+            { label: isUrdu ? "🏥 ان پرسن (کلینک) اپوائنٹمنٹ" : "🏥 In-Person Appointment", action: "booking_type_in_person" },
+            { label: isUrdu ? "💻 آن لائن اپوائنٹمنٹ" : "💻 Online Appointment", action: "booking_type_online" }
           ],
           time: "Now"
         });
@@ -300,24 +477,27 @@
           showBookingReview();
           break;
         }
+        state.isChangingDetails = true;
         state.currentStep = "booking_city";
         pushMessage({
           sender: "ai",
-          title: "📍 Change City",
-          text: "Which clinic location would you like to visit?",
+          title: isUrdu ? "کلینک مقام تبدیل کریں" : "Change Clinic Location",
+          text: isUrdu ? "آپ کون سے کلینک تشریف لانا چاہتے ہیں؟" : "Which clinic location would you like to visit?",
           quickReplies: [
-            { label: "📍 Bahawalpur", action: "booking_city_bwp" }
+            { label: isUrdu ? "📍 بہاولپور (اقبال ہسپتال)" : "📍 Bahawalpur (Iqbal Hospital)", action: "booking_city_bwp" }
           ],
           time: "Now"
         });
         break;
 
       case "change_date":
+        state.isChangingDetails = true;
         state.currentStep = "booking_date";
-        loadAvailableDates("booking", "Change Date");
+        loadAvailableDates("booking", isUrdu ? "تاریخ تبدیل کریں" : "Change Appointment Date");
         break;
 
       case "change_time":
+        state.isChangingDetails = true;
         state.currentStep = "booking_time";
         loadAvailableTimes("booking", state.bookingState.date);
         break;
@@ -325,16 +505,16 @@
       case "change_booking_menu":
         pushMessage({
           sender: "ai",
-          title: "✏️ Change Details",
-          text: "What would you like to change?",
+          title: isUrdu ? "✏️ تفصیلات تبدیل کریں" : "✏️ Change Details",
+          text: isUrdu ? "آپ کس معلومات میں تبدیلی کرنا چاہتے ہیں؟" : "What details would you like to change?",
           quickReplies: [
-            { label: "Patient Name", action: "change_name" },
-            { label: "Phone Number", action: "change_phone" },
-            { label: "Appointment Type", action: "change_type" },
-            ...(state.bookingState.appointmentType === "in_person" ? [{ label: "City", action: "change_city" }] : []),
-            { label: "Date", action: "change_date" },
-            { label: "Time", action: "change_time" },
-            { label: "Back to Confirmation", action: "show_booking_review" }
+            { label: isUrdu ? "👤 مریض کا نام" : "👤 Patient Name", action: "change_name" },
+            { label: isUrdu ? "📞 فون نمبر" : "📞 Phone Number", action: "change_phone" },
+            { label: isUrdu ? "🏥 اپوائنٹمنٹ کی قسم" : "🏥 Consultation Type", action: "change_type" },
+            ...(state.bookingState.appointmentType === "in_person" ? [{ label: isUrdu ? "📍 کلینک کا مقام" : "📍 Clinic Location", action: "change_city" }] : []),
+            { label: isUrdu ? "📅 تاریخ" : "📅 Date", action: "change_date" },
+            { label: isUrdu ? "🕒 وقت" : "🕒 Time", action: "change_time" },
+            { label: isUrdu ? "↩️ واپس ریویو پر جائیں" : "↩️ Back to Review", action: "show_booking_review" }
           ],
           time: "Now"
         });
@@ -343,17 +523,17 @@
       case "cancel_booking_prompt":
         pushMessage({
           sender: "ai",
-          text: "Are you sure you want to cancel this booking process?",
+          text: isUrdu ? "کیا آپ واقعی یہ بکنگ منسوخ کرنا چاہتے ہیں؟" : "Are you sure you want to cancel this booking process?",
           quickReplies: [
-            { label: "Yes, Cancel", action: "cancel_booking_confirm" },
-            { label: "No, Continue", action: "show_booking_review" }
+            { label: isUrdu ? "❌ ہاں، بکنگ منسوخ کریں" : "❌ Yes, Cancel Booking", action: "cancel_booking_confirm" },
+            { label: isUrdu ? "↩️ نہیں، جاری رکھیں" : "↩️ No, Keep Editing", action: "show_booking_review" }
           ],
           time: "Now"
         });
         break;
 
       case "cancel_booking_confirm":
-        pushMessage({ sender: "user", text: "Yes, Cancel", time: "Now" });
+        pushMessage({ sender: "user", text: isUrdu ? "❌ بکنگ منسوخ کریں" : "❌ Cancel Booking", time: "Now" });
         state.bookingState = {
           patientName: "",
           phoneNumber: "",
@@ -363,11 +543,19 @@
           date: "",
           dateLabel: "",
           time: "",
-          timeLabel: ""
+          timeLabel: "",
+          consentGiven: false,
+          idempotencyKey: ""
         };
         state.currentFlow = "idle";
         state.currentStep = "main_menu";
-        pushMessage({ sender: "ai", text: "Booking process cancelled. How else may I help you today?", time: "Now" });
+        state.bookingStepIndex = 0;
+        state.isChangingDetails = false;
+        pushMessage({
+          sender: "ai",
+          text: isUrdu ? "بکنگ کا عمل منسوخ کر دیا گیا ہے۔ میں آپ کی اور کیا مدد کر سکتا ہوں؟" : "Booking process cancelled. How else may I help you today?",
+          time: "Now"
+        });
         state.showMainMenuCard = true;
         break;
 
@@ -377,13 +565,13 @@
 
       case "confirm_booking_final":
         if (!state.consentPolicy) {
-          showToast("Please wait while the current consent statement loads.");
+          showToast("Please wait while the consent statement loads.");
           showBookingReview();
           break;
         }
-        const submittedConsent = true; // The patient actively selected the consent-labelled action.
         state.bookingState.idempotencyKey ||= (globalThis.crypto?.randomUUID?.() || `web-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-        pushMessage({ sender: "user", text: "✅ I Consent & Confirm Appointment", time: "Now" });
+        pushMessage({ sender: "user", text: isUrdu ? "✅ میں متفق ہوں اور اپوائنٹمنٹ کی تصدیق کرتا ہوں" : "✅ I Consent & Confirm Appointment", time: "Now" });
+        
         api.book({
           fullName: state.bookingState.patientName,
           phone: state.bookingState.phoneNumber || state.activePhone,
@@ -392,35 +580,83 @@
           time: state.bookingState.time,
           locationId: state.bookingState.locationId || "BWP",
           reason: "General Consultation",
-          consentGiven: submittedConsent,
+          consentGiven: true,
           consentTextVersion: state.consentPolicy.version
         }, state.bookingState.idempotencyKey).then(res => {
           const appt = res.appointment;
           state.managedAppointment = appt;
+          state.activePhone = state.bookingState.phoneNumber || state.activePhone;
           const isOnline = state.bookingState.appointmentType === "online";
+          
+          state.currentFlow = "idle";
+          state.currentStep = "booking_success";
+          state.bookingStepIndex = 0;
+          state.isChangingDetails = false;
 
           pushMessage({
             sender: "ai",
-            title: "✅ Appointment Confirmed",
-            text: `Your appointment with Dr. Sohaib has been booked successfully.\n\n👤 Patient: ${state.bookingState.patientName}\n📞 Phone: ${state.bookingState.phoneNumber || state.activePhone}\n${isOnline ? '💻 Appointment Type: Online Appointment' : `🏥 Appointment Type: In-Person\n📍 ${appt.clinic?.name || 'Configured clinic'}\n${appt.clinic?.address || ''}`}\n\n📅 ${state.bookingState.dateLabel || appt.date}\n🕓 ${state.bookingState.timeLabel || appt.time}\n\n🎫 Token Number: ${appt.tokenNumber}\n\nPlease arrive a little before your appointment time.`,
+            title: isUrdu ? "🎉 اپوائنٹمنٹ کی تصدیق ہو گئی!" : "🎉 Appointment Confirmed!",
+            text: isUrdu
+              ? `ڈاکٹر صہیب کے ساتھ آپ کی اپوائنٹمنٹ کامیابی سے بک ہو گئی ہے۔`
+              : `Your appointment with Dr. Shoaib has been booked successfully.`,
+            html: `
+              <div class="structured-card">
+                <div class="card-badge success">✅ ${isUrdu ? "کنفرمڈ" : "Confirmed"}</div>
+                <div class="card-detail-row">
+                  <span class="card-detail-label">👤 ${isUrdu ? "مریض" : "Patient"}</span>
+                  <span class="card-detail-value">${esc(appt.patientName)}</span>
+                </div>
+                <div class="card-detail-row">
+                  <span class="card-detail-label">📞 ${isUrdu ? "فون نمبر" : "Phone"}</span>
+                  <span class="card-detail-value">${esc(appt.patientPhone || state.activePhone)}</span>
+                </div>
+                <div class="card-detail-row">
+                  <span class="card-detail-label">🏥 ${isUrdu ? "نوعیت" : "Type"}</span>
+                  <span class="card-detail-value">${isOnline ? (isUrdu ? "آن لائن مشاورت" : "Online Consultation") : (isUrdu ? "ان پرسن کلینک" : "In-Person Clinic")}</span>
+                </div>
+                ${!isOnline ? `
+                  <div class="card-detail-row">
+                    <span class="card-detail-label">📍 ${isUrdu ? "کلینک" : "Clinic"}</span>
+                    <span class="card-detail-value">${esc(appt.clinic?.name || "Iqbal Hospital, Bahawalpur")}</span>
+                  </div>
+                ` : ''}
+                <div class="card-detail-row">
+                  <span class="card-detail-label">📅 ${isUrdu ? "تاریخ" : "Date"}</span>
+                  <span class="card-detail-value">${esc(state.bookingState.dateLabel || appt.date)}</span>
+                </div>
+                <div class="card-detail-row">
+                  <span class="card-detail-label">🕒 ${isUrdu ? "وقت" : "Time"}</span>
+                  <span class="card-detail-value">${esc(state.bookingState.timeLabel || appt.time)}</span>
+                </div>
+                <div class="card-detail-row" style="background: #e8f5f2; margin: 8px -16px -16px; padding: 12px 16px; border-radius: 0 0 16px 16px;">
+                  <div>
+                    <strong style="color: var(--primary-dark-teal); display: block; font-size: 0.95rem;">🆔 ID: ${esc(appt.appointmentId || appt._id)}</strong>
+                    <strong style="color: var(--secondary-teal); display: block; font-size: 1.1rem; margin-top: 2px;">🎫 Token: ${esc(appt.tokenNumber)}</strong>
+                  </div>
+                </div>
+              </div>
+            `,
             quickReplies: [
-              { label: "📋 View Appointment", action: "manage_booking" },
-              { label: "🏠 Main Menu", action: "show_main_menu" }
+              { label: isUrdu ? "📋 اپوائنٹمنٹ مینیج کریں" : "📋 Manage Appointment", action: "action_view_managed" },
+              { label: isUrdu ? "🏠 مین مینو" : "🏠 Main Menu", action: "show_main_menu" }
             ],
             time: "Now"
           });
-          state.currentFlow = "idle";
-          state.currentStep = "main_menu";
-          showToast("Appointment Confirmed & Saved to Admin Panel!");
+          showToast("Appointment Booked Successfully!");
           renderChatView();
         }).catch(err => {
           showToast("Booking Error: " + err.message);
           pushMessage({
             sender: "ai",
-            text: "Sorry, we couldn't complete your appointment at the moment. Please try again or speak to clinic staff.",
+            title: isUrdu ? "⚠️ بکنگ مکمل نہیں ہو سکی" : "⚠️ We couldn't complete the booking.",
+            text: isUrdu
+              ? `یہ وقت اب شاید دستیاب نہیں رہا۔ براہ کرم دوسرا وقت یا تاریخ منتخب کریں۔ (آپ کی درج کردہ معلومات محفوظ ہیں)`
+              : `That time slot may no longer be available. Please choose another time or date. (Your entered patient information is saved).`,
             quickReplies: [
-              { label: "👤 Speak to Staff", action: "speak_to_staff" },
-              { label: "🏠 Main Menu", action: "show_main_menu" }
+              { label: isUrdu ? "🕒 دوسرا وقت چنیں" : "🕒 Choose Another Time", action: "change_time" },
+              { label: isUrdu ? "📅 دوسری تاریخ چنیں" : "📅 Choose Another Date", action: "change_date" },
+              { label: isUrdu ? "👤 عملے سے بات کریں" : "👤 Speak to Staff", action: "speak_to_staff" },
+              { label: isUrdu ? "🏠 مین مینو" : "🏠 Main Menu", action: "show_main_menu" }
             ],
             time: "Now"
           });
@@ -428,91 +664,54 @@
         });
         break;
 
-      case "decline_booking_consent":
-        if (!state.consentPolicy) {
-          showBookingReview();
-          break;
-        }
-        api.recordConsentDecision({
-          fullName: state.bookingState.patientName,
-          phone: state.bookingState.phoneNumber || state.activePhone,
-          preferredLanguage: state.lang,
-          consentGiven: false,
-          consentTextVersion: state.consentPolicy.version
-        }).then(() => {
-          pushMessage({ sender: "user", text: "I do not consent", time: "Now" });
-          pushMessage({ sender: "ai", text: "No appointment was created because consent was declined.", time: "Now" });
-          state.currentFlow = "idle";
-          state.currentStep = "main_menu";
-          state.showMainMenuCard = true;
-          renderChatView();
-        }).catch((error) => showToast(error.message));
-        break;
-
       case "manage_booking":
-        pushMessage({ sender: "user", text: isUrdu ? "📋 اپوائنٹمنٹ مینیج کریں" : "📋 Manage Appointment", time: "Now" });
+        state.currentFlow = "manage";
+        state.currentStep = "manage_search";
+        if (!options.silentUserMsg) {
+          pushMessage({ sender: "user", text: isUrdu ? "📋 اپوائنٹمنٹ مینیج کریں" : "📋 Manage Appointment", time: "Now" });
+        }
         pushMessage({
           sender: "ai",
-          title: "📋 Manage Appointment",
-          text: "Find your existing appointment record to view, confirm, reschedule, or cancel:",
+          title: isUrdu ? "🔎 اپوائنٹمنٹ تلاش کریں" : "🔎 Find Your Appointment",
+          text: isUrdu
+            ? "اپوائنٹمنٹ کی معلومات تلاش کرنے کے لیے اپنا اپوائنٹمنٹ شناختی کارڈ (ID) / ٹوکن نمبر اور رجسٹرڈ فون نمبر درج کریں:"
+            : "Please enter your Appointment ID or Token Number along with your registered phone number to manage your booking:",
           html: `
             <form id="chat-lookup-form" class="demo-form compact" style="margin-top: 10px;">
-              <label>Appointment ID / Token
-                <input name="appointmentId" placeholder="e.g. BWP-014 or DS-2026-1001" required>
+              <label>${isUrdu ? "اپوائنٹمنٹ آئی ڈی یا ٹوکن نمبر" : "Appointment ID or Token Number"}
+                <input name="appointmentId" placeholder="e.g. DS-2026-0001 or 014" required>
               </label>
-              <label>Registered Phone Number
-                <input name="phone" value="${esc(state.activePhone)}" required>
+              <label>${isUrdu ? "رجسٹرڈ واٹس ایپ / فون نمبر" : "Registered Phone / WhatsApp Number"}
+                <input name="phone" value="${esc(state.activePhone)}" placeholder="e.g. 03001234567" required>
               </label>
-              <button class="primary-action wide-button" type="submit">Search Appointment</button>
+              <button class="primary-action wide-button" type="submit">${isUrdu ? "اپوائنٹمنٹ تلاش کریں" : "Search Appointment"}</button>
             </form>
           `,
-          quickReplies: [{ label: "🏠 Main Menu", action: "show_main_menu" }],
+          quickReplies: [{ label: isUrdu ? "🏠 مین مینو" : "🏠 Main Menu", action: "show_main_menu" }],
           time: "Now"
         });
-        break;
-
-      case "action_confirm_appt":
-        if (!state.managedAppointment) break;
-        pushMessage({ sender: "user", text: "✅ Confirm Appointment", time: "Now" });
-        api.confirmAppointment(state.managedAppointment.appointmentId || state.managedAppointment._id, { phone: state.activePhone })
-          .then(res => {
-            state.managedAppointment.status = "confirmed";
-            pushMessage({
-              sender: "ai",
-              title: "✅ Appointment Confirmed",
-              text: "Your appointment status has been updated to Confirmed in the clinic system.",
-              quickReplies: [
-                { label: "📋 View Details", action: "action_view_managed" },
-                { label: "🏠 Main Menu", action: "show_main_menu" }
-              ],
-              time: "Now"
-            });
-            showToast("Appointment Status Confirmed!");
-            renderChatView();
-          })
-          .catch(err => {
-            showToast("Error confirming appointment: " + err.message);
-          });
         break;
 
       case "action_reschedule_appt":
         if (!state.managedAppointment) break;
         state.currentFlow = "reschedule";
         state.bookingState.locationId = state.managedAppointment.location?.code || state.managedAppointment.clinic?.code || "BWP";
-        pushMessage({ sender: "user", text: "Reschedule Appointment", time: "Now" });
-        loadAvailableDates("reschedule", "Reschedule Appointment");
+        pushMessage({ sender: "user", text: isUrdu ? "📅 تاریخ / وقت تبدیل کریں" : "📅 Reschedule Appointment", time: "Now" });
+        loadAvailableDates("reschedule", isUrdu ? "نئی تاریخ منتخب کریں" : "Select New Date");
         break;
 
       case "action_cancel_appt":
         if (!state.managedAppointment) break;
-        pushMessage({ sender: "user", text: "❌ Cancel Appointment", time: "Now" });
+        pushMessage({ sender: "user", text: isUrdu ? "❌ اپوائنٹمنٹ منسوخ کریں" : "❌ Cancel Appointment", time: "Now" });
         pushMessage({
           sender: "ai",
-          title: "⚠️ Cancel Appointment",
-          text: "Are you sure you want to cancel this appointment?",
+          title: isUrdu ? "⚠️ کیا آپ منسوخ کرنا چاہتے ہیں؟" : "⚠️ Cancel Appointment Confirmation",
+          text: isUrdu
+            ? `کیا آپ واقعی اس اپوائنٹمنٹ (ID: ${state.managedAppointment.appointmentId || state.managedAppointment._id}) کو منسوخ کرنا چاہتے ہیں؟`
+            : `Are you sure you want to cancel appointment ${state.managedAppointment.appointmentId || state.managedAppointment._id} scheduled for ${state.managedAppointment.date} at ${state.managedAppointment.time}?`,
           quickReplies: [
-            { label: "Yes, Cancel Appointment", action: "action_cancel_confirm" },
-            { label: "No, Keep Appointment", action: "action_view_managed" }
+            { label: isUrdu ? "❌ ہاں، اپوائنٹمنٹ منسوخ کریں" : "❌ Yes, Cancel Appointment", action: "action_cancel_confirm" },
+            { label: isUrdu ? "↩️ نہیں، اپوائنٹمنٹ برقرار رکھیں" : "↩️ Keep Appointment", action: "action_view_managed" }
           ],
           time: "Now"
         });
@@ -520,17 +719,19 @@
 
       case "action_cancel_confirm":
         if (!state.managedAppointment) break;
-        pushMessage({ sender: "user", text: "Yes, Cancel Appointment", time: "Now" });
+        pushMessage({ sender: "user", text: isUrdu ? "ہاں، منسوخ کریں" : "Yes, Cancel Appointment", time: "Now" });
         api.cancelAppointment(state.managedAppointment.appointmentId || state.managedAppointment._id, { phone: state.activePhone })
           .then(res => {
             state.managedAppointment.status = "cancelled";
             pushMessage({
               sender: "ai",
-              title: "✅ Appointment Cancelled",
-              text: "Your appointment has been cancelled successfully and the slot has been freed.",
+              title: isUrdu ? "✅ اپوائنٹمنٹ منسوخ ہو گئی" : "✅ Appointment Cancelled",
+              text: isUrdu
+                ? "آپ کی اپوائنٹمنٹ کامیابی سے منسوخ کر دی گئی ہے اور سلوٹ کو آزاد کر دیا گیا ہے۔"
+                : "Your appointment has been cancelled successfully and the slot has been freed.",
               quickReplies: [
-                { label: "📅 Book New Appointment", action: "start_booking" },
-                { label: "🏠 Main Menu", action: "show_main_menu" }
+                { label: isUrdu ? "📅 نئی اپوائنٹمنٹ بک کریں" : "📅 Book New Appointment", action: "start_booking" },
+                { label: isUrdu ? "🏠 مین مینو" : "🏠 Main Menu", action: "show_main_menu" }
               ],
               time: "Now"
             });
@@ -544,15 +745,17 @@
 
       case "action_earlier_appt":
         if (!state.managedAppointment) break;
-        pushMessage({ sender: "user", text: "⏰ Request Earlier Appointment", time: "Now" });
+        pushMessage({ sender: "user", text: isUrdu ? "⏰ پہلے وقت کی درخواست" : "⏰ Request Earlier Slot", time: "Now" });
         api.requestEarlierAppointment(state.managedAppointment.appointmentId || state.managedAppointment._id, { phone: state.activePhone })
           .then(res => {
             pushMessage({
               sender: "ai",
-              title: "⏰ Earlier Slot Request Received",
-              text: "Your request for an earlier appointment slot has been recorded. Our staff will notify you as soon as an earlier slot opens up.",
+              title: isUrdu ? "⏰ درخواست موصول ہو گئی" : "⏰ Earlier Slot Request Recorded",
+              text: isUrdu
+                ? "جلد وقت کی اپوائنٹمنٹ کی آپ کی درخواست ریکارڈ کر لی گئی ہے۔ اگر کوئی وقت پہلے خالی ہوا تو کلینک کا عملہ آپ سے رابطہ کرے گا۔"
+                : "Your request for an earlier appointment slot has been recorded. Our staff will notify you as soon as an earlier slot opens up.",
               quickReplies: [
-                { label: "🏠 Main Menu", action: "show_main_menu" }
+                { label: isUrdu ? "🏠 مین مینو" : "🏠 Main Menu", action: "show_main_menu" }
               ],
               time: "Now"
             });
@@ -573,56 +776,156 @@
         const mIsOnline = String(mAppt.appointmentType).toLowerCase() === "online";
         pushMessage({
           sender: "ai",
-          title: "📋 Appointment Details",
-          text: `👤 Patient: ${mAppt.patientName}\n🎫 Token: ${mAppt.tokenNumber}\n${mIsOnline ? '💻 Type: Online Appointment' : '🏥 Type: In-Person Appointment\n📍 Clinic: ' + (mAppt.clinic?.name || 'Configured clinic') + '\n📌 Location: ' + (mAppt.clinic?.address || '')}\n📅 Date: ${mAppt.date}\n🕓 Time: ${mAppt.time}\n📋 Status: ${String(mAppt.status).toUpperCase()}`,
+          title: isUrdu ? "📋 اپوائنٹمنٹ تفصیلات" : "📋 Your Appointment Details",
+          html: `
+            <div class="structured-card">
+              <div class="card-badge ${mAppt.status === 'cancelled' ? 'warning' : 'success'}">${esc(String(mAppt.status).toUpperCase())}</div>
+              <div class="card-detail-row">
+                <span class="card-detail-label">👤 ${isUrdu ? "مریض" : "Patient"}</span>
+                <span class="card-detail-value">${esc(mAppt.patientName)}</span>
+              </div>
+              <div class="card-detail-row">
+                <span class="card-detail-label">🏥 ${isUrdu ? "نوعیت" : "Type"}</span>
+                <span class="card-detail-value">${mIsOnline ? (isUrdu ? "آن لائن مشاورت" : "Online Consultation") : (isUrdu ? "ان پرسن کلینک" : "In-Person Clinic")}</span>
+              </div>
+              ${!mIsOnline ? `
+                <div class="card-detail-row">
+                  <span class="card-detail-label">📍 ${isUrdu ? "کلینک" : "Clinic"}</span>
+                  <span class="card-detail-value">${esc(mAppt.clinic?.name || "Iqbal Hospital, Bahawalpur")}</span>
+                </div>
+              ` : ''}
+              <div class="card-detail-row">
+                <span class="card-detail-label">📅 ${isUrdu ? "تاریخ" : "Date"}</span>
+                <span class="card-detail-value">${esc(mAppt.date)}</span>
+              </div>
+              <div class="card-detail-row">
+                <span class="card-detail-label">🕒 ${isUrdu ? "وقت" : "Time"}</span>
+                <span class="card-detail-value">${esc(timeLabel(mAppt.time))}</span>
+              </div>
+              <div class="card-detail-row" style="background: #e8f5f2; margin: 8px -16px -16px; padding: 12px 16px; border-radius: 0 0 16px 16px;">
+                <div>
+                  <strong style="color: var(--primary-dark-teal); display: block; font-size: 0.95rem;">🆔 ID: ${esc(mAppt.appointmentId || mAppt._id)}</strong>
+                  <strong style="color: var(--secondary-teal); display: block; font-size: 1.1rem; margin-top: 2px;">🎫 Token: ${esc(mAppt.tokenNumber)}</strong>
+                </div>
+              </div>
+            </div>
+          `,
           quickReplies: [
-            { label: "✅ Confirm Appointment", action: "action_confirm_appt" },
-            { label: "📅 Reschedule", action: "action_reschedule_appt" },
-            { label: "❌ Cancel Appointment", action: "action_cancel_appt" },
-            { label: "⏰ Request Earlier Appointment", action: "action_earlier_appt" },
-            { label: "🏠 Main Menu", action: "show_main_menu" }
+            { label: isUrdu ? "📅 تاریخ/وقت تبدیل کریں" : "📅 Reschedule", action: "action_reschedule_appt" },
+            { label: isUrdu ? "❌ اپوائنٹمنٹ منسوخ کریں" : "❌ Cancel Appointment", action: "action_cancel_appt" },
+            { label: isUrdu ? "⏰ پہلے وقت کی درخواست" : "⏰ Request Earlier Slot", action: "action_earlier_appt" },
+            { label: isUrdu ? "🏠 مین مینو" : "🏠 Main Menu", action: "show_main_menu" }
           ],
           time: "Now"
         });
         break;
 
       case "clinic_locations":
-        pushMessage({ sender: "user", text: isUrdu ? "📍 کلینک کی معلومات" : "📍 Clinic Information", time: "Now" });
+        pushMessage({ sender: "user", text: isUrdu ? "🏥 کلینک کی معلومات" : "🏥 Clinic Information", time: "Now" });
         pushMessage({
           sender: "ai",
-          title: "📍 Clinic Locations",
-          text: "Bahawalpur\n🏥 Iqbal Hospital\n📍 Noor Mahal Road, Bahawalpur\n🗓 Monday to Thursday\n🕓 4:30 PM – 8:30 PM\n\nBahawalnagar — Coming Soon\nRahim Yar Khan — Coming Soon",
+          title: isUrdu ? "🏥 کلینک کی معلومات" : "🏥 Clinic Locations & Timings",
+          html: `
+            <div class="structured-card">
+              <div class="card-badge info">📍 Bahawalpur</div>
+              <h3 style="color: var(--primary-dark-teal); margin-bottom: 6px;">Iqbal Hospital</h3>
+              <p style="font-size: 0.88rem; color: var(--text-secondary); margin-bottom: 10px;">📍 Noor Mahal Road, Bahawalpur</p>
+              <div class="card-detail-row">
+                <span class="card-detail-label">🗓️ ${isUrdu ? "دن" : "Days"}</span>
+                <span class="card-detail-value">Monday – Thursday</span>
+              </div>
+              <div class="card-detail-row">
+                <span class="card-detail-label">🕒 ${isUrdu ? "وقت" : "Timing"}</span>
+                <span class="card-detail-value">4:30 PM – 8:30 PM</span>
+              </div>
+            </div>
+            <div class="structured-card" style="opacity: 0.75;">
+              <div class="card-badge warning">Coming Soon</div>
+              <h4 style="color: var(--text-main);">📍 Bahawalnagar & Rahim Yar Khan</h4>
+              <p style="font-size: 0.82rem; color: var(--text-secondary); margin-top: 4px;">Regional clinic centers opening soon.</p>
+            </div>
+          `,
           quickReplies: [
-            { label: "📅 Book Appointment", action: "start_booking" },
-            { label: "🏠 Main Menu", action: "show_main_menu" }
+            { label: isUrdu ? "📅 بہاولپور میں بک کریں" : "📅 Book at Bahawalpur", action: "start_booking" },
+            { label: isUrdu ? "🗺️ نقشه دیکھں" : "🗺️ View Directions", action: "open_map_directions" },
+            { label: isUrdu ? "🏠 مین مینو" : "🏠 Main Menu", action: "show_main_menu" }
           ],
           time: "Now"
         });
+        break;
+
+      case "open_map_directions":
+        window.open("https://maps.google.com/?q=Iqbal+Hospital+Noor+Mahal+Road+Bahawalpur", "_blank");
         break;
 
       case "doctor_profile":
         pushMessage({ sender: "user", text: isUrdu ? "👨‍⚕️ ڈاکٹر کا پروفائل" : "👨‍⚕️ Doctor Profile", time: "Now" });
         pushMessage({
           sender: "ai",
-          title: "👨‍⚕️ Dr. Sohaib Profile & Services",
-          text: "Dr. Sohaib is a dedicated physician and surgeon based at Iqbal Hospital, Bahawalpur. He provides professional consultations, surgical evaluations, and follow-up care for patients.",
+          title: isUrdu ? "👨‍⚕️ ڈاکٹر کا پروفائل" : "👨‍⚕️ Dr. Shoaib Profile",
+          html: `
+            <div class="structured-card">
+              <div class="card-badge info">Specialist Physician & Surgeon</div>
+              <h3 style="color: var(--primary-dark-teal); margin-bottom: 4px;">Dr. Shoaib</h3>
+              <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 12px;">Dedicated Specialist Physician & Surgeon practicing at Iqbal Hospital, Bahawalpur.</p>
+              <div class="card-detail-row">
+                <span class="card-detail-label">🎓 ${isUrdu ? "قابلیت" : "Qualifications"}</span>
+                <span class="card-detail-value">MBBS, FCPS / Specialist Surgeon</span>
+              </div>
+              <div class="card-detail-row">
+                <span class="card-detail-label">🩺 ${isUrdu ? "تخصص" : "Specialty"}</span>
+                <span class="card-detail-value">Consultant Physician & Surgeon</span>
+              </div>
+              <div class="card-detail-row">
+                <span class="card-detail-label">📍 ${isUrdu ? "کلینک" : "Clinic Location"}</span>
+                <span class="card-detail-value">Iqbal Hospital, Bahawalpur</span>
+              </div>
+              <div class="card-detail-row">
+                <span class="card-detail-label">🗓️ ${isUrdu ? "معائنہ کے دن" : "Consultation Days"}</span>
+                <span class="card-detail-value">Monday to Thursday</span>
+              </div>
+              <div class="card-detail-row">
+                <span class="card-detail-label">🕒 ${isUrdu ? "وقت" : "Timing"}</span>
+                <span class="card-detail-value">4:30 PM – 8:30 PM</span>
+              </div>
+            </div>
+          `,
           quickReplies: [
-            { label: "📅 Book Appointment", action: "start_booking" },
-            { label: "🏠 Main Menu", action: "show_main_menu" }
+            { label: isUrdu ? "📅 اپوائنٹمنٹ بک کریں" : "📅 Book Appointment", action: "start_booking" },
+            { label: isUrdu ? "🏠 مین مینو" : "🏠 Main Menu", action: "show_main_menu" }
           ],
           time: "Now"
         });
         break;
 
       case "treatment_info":
-        pushMessage({ sender: "user", text: isUrdu ? "🦴 علاج کی معلومات" : "🦴 Treatment Information", time: "Now" });
+        pushMessage({ sender: "user", text: isUrdu ? "🩺 علاج کی خدمات" : "🩺 Treatments & Services", time: "Now" });
         pushMessage({
           sender: "ai",
-          title: "🦴 Treatment & Services Overview",
-          text: "Dr. Sohaib provides comprehensive diagnostic evaluations and surgical consultations for:\n\n- Knee Joint Conditions & Arthroscopy\n- ACL Ligament & Meniscus Tears\n- Shoulder Pain & Joint Stiffness\n- Partial & Total Joint Replacement\n- Trauma & Fracture Management",
+          title: isUrdu ? "🩺 کلینک کی خدمات" : "🩺 Clinic Treatments & Services",
+          html: `
+            <div class="structured-card">
+              <div class="card-detail-row">
+                <span class="card-detail-label">🩺 General Consultation</span>
+                <span class="card-detail-value">Available</span>
+              </div>
+              <div class="card-detail-row">
+                <span class="card-detail-label">🦴 Surgical & Orthopaedic Evaluation</span>
+                <span class="card-detail-value">Available</span>
+              </div>
+              <div class="card-detail-row">
+                <span class="card-detail-label">🧾 Follow-Up Consultation</span>
+                <span class="card-detail-value">Available</span>
+              </div>
+              <div class="card-detail-row">
+                <span class="card-detail-label">🩹 Post-Op Surgical Assessment</span>
+                <span class="card-detail-value">Available</span>
+              </div>
+            </div>
+          `,
           quickReplies: [
-            { label: "📅 Book Appointment", action: "start_booking" },
-            { label: "🏠 Main Menu", action: "show_main_menu" }
+            { label: isUrdu ? "📅 اپوائنٹمنٹ بک کریں" : "📅 Book Appointment", action: "start_booking" },
+            { label: isUrdu ? "🏠 مین مینو" : "🏠 Main Menu", action: "show_main_menu" }
           ],
           time: "Now"
         });
@@ -635,15 +938,14 @@
         }
         pushMessage({
           sender: "ai",
-          title: "📎 Upload Medical Report",
-          text: "Please select the type of medical report you would like to upload:",
+          title: isUrdu ? "📎 رپورٹ کی قسم منتخب کریں" : "📎 Upload Medical Report",
+          text: isUrdu ? "براہ کرم جس قسم کی میڈیکل رپورٹ اپ لوڈ کرنا چاہتے ہیں اسے منتخب کریں:" : "Please select the type of medical report you would like to upload:",
           quickReplies: [
-            { label: "MRI Scan", action: "upload_type_mri" },
-            { label: "X-Ray", action: "upload_type_xray" },
-            { label: "Prescription", action: "upload_type_prescription" },
-            { label: "Laboratory Report", action: "upload_type_lab" },
-            { label: "Discharge Summary", action: "upload_type_discharge" },
-            { label: "Other Report", action: "upload_type_other" }
+            { label: isUrdu ? "🧪 لیب رپورٹ" : "🧪 Laboratory Report", action: "upload_type_lab" },
+            { label: isUrdu ? "🩻 ایکس رے / سکین" : "🩻 X-Ray / Scan", action: "upload_type_xray" },
+            { label: isUrdu ? "💊 نسخہ (Prescription)" : "💊 Prescription", action: "upload_type_prescription" },
+            { label: isUrdu ? "📄 سابقہ میڈیکل رپورٹ" : "📄 Previous Medical Report", action: "upload_type_other" },
+            { label: isUrdu ? "🏠 مین مینو" : "🏠 Main Menu", action: "show_main_menu" }
           ],
           time: "Now"
         });
@@ -653,51 +955,30 @@
         handleChatAction("booking_type_online");
         break;
 
-      case "emergency_help":
-        pushMessage({ sender: "user", text: isUrdu ? "🚨 ایمرجنسی الرٹ" : "🚨 Emergency Notice", time: "Now" });
-        pushMessage({
-          sender: "ai",
-          title: "🚨 Emergency Notice",
-          text: "This may require urgent medical attention. Please visit the nearest emergency department or contact your local emergency service immediately.",
-          html: `
-            <form id="chat-emergency-form" class="demo-form compact" style="margin-top: 10px; background: #fff5f5; border-color: var(--red);">
-              <label>Mobile Number
-                <input name="phone" value="${esc(state.activePhone)}" required>
-              </label>
-              <label>Urgent Emergency Message
-                <textarea name="alertMessage" placeholder="Describe urgent medical emergency..." required></textarea>
-              </label>
-              <button class="danger-action wide-button" type="submit">Send Priority Emergency Alert</button>
-            </form>
-          `,
-          quickReplies: [{ label: "🏠 Main Menu", action: "show_main_menu" }],
-          time: "Now"
-        });
-        break;
-
       case "speak_to_staff":
-        pushMessage({ sender: "user", text: isUrdu ? "👤 عملے سے بات کریں" : "👤 Speak to Staff", time: "Now" });
+        pushMessage({ sender: "user", text: isUrdu ? "👤 عملے سے بات کریں" : "👤 Speak to Clinic Staff", time: "Now" });
         pushMessage({
           sender: "ai",
-          title: "👤 Human Assistant Handover",
-          text: "Certainly. I'm transferring this conversation to the clinic team. A staff member will continue the conversation with you shortly.",
+          title: isUrdu ? "👤 کلینک کی ٹیم سے رابطہ" : "👤 Clinic Staff Takeover",
+          text: isUrdu
+            ? "میں آپ کی بات چیت کلینک کی ٹیم کو منتقل کر رہا ہوں۔ عملے کا رکن جلد ہی آپ سے رابطہ کرے گا۔"
+            : "I'll connect you with the clinic team. A staff member will continue the conversation with you shortly.",
           time: "Now"
         });
         state.conversationMode = "HUMAN";
         state.humanHandoverActive = true;
         api.createConversation({ phone: state.activePhone, message: "Patient requested staff handover." }).catch(() => {});
+        renderChatView();
         break;
 
       default:
         if (action.startsWith("upload_type_")) {
           const typeCode = action.replace("upload_type_", "");
           const labelsMap = {
-            mri: "MRI Scan",
-            xray: "X-Ray",
-            prescription: "Prescription",
             lab: "Laboratory Report",
-            discharge: "Discharge Summary",
-            other: "Other Report"
+            xray: "X-Ray / Scan",
+            prescription: "Prescription",
+            other: "Medical Report"
           };
           const selectedLabel = labelsMap[typeCode] || "Medical Report";
           state.uploadReportState = {
@@ -712,59 +993,93 @@
           pushMessage({
             sender: "ai",
             title: `📎 Upload ${selectedLabel}`,
-            text: "Please select the report file you would like to upload (PDF, JPG, JPEG, PNG up to 10 MB):",
+            text: isUrdu
+              ? "براہ کرم فائل منتخب کریں (PDF, JPG, PNG 10 MB تک):"
+              : "Please select the report file you would like to upload (PDF, JPG, JPEG, PNG up to 10 MB):",
             html: `
               <form id="chat-report-form" class="demo-form compact" style="margin-top: 10px;">
                 <input type="hidden" name="documentType" value="${esc(typeCode)}">
-                <label>Patient Phone Number
-                  <input name="phone" value="${esc(state.activePhone)}" required>
+                <label>${isUrdu ? "مریض کا فون نمبر" : "Patient Phone Number"}
+                  <input name="phone" value="${esc(state.activePhone)}" placeholder="e.g. 03001234567" required>
                 </label>
-                <label>Appointment ID / Token (Optional)
-                  <input name="appointmentId" value="${esc(apptId)}" placeholder="e.g. BWP-014 or DS-2026-1001">
+                <label>${isUrdu ? "اپوائنٹمنٹ ID / ٹوکن (اختیاری)" : "Appointment ID / Token (Optional)"}
+                  <input name="appointmentId" value="${esc(apptId)}" placeholder="e.g. DS-2026-0001 or 014">
                 </label>
-                <label>Report Title / Description
-                  <input name="reportTitle" value="${esc(selectedLabel)} Report" required>
+                <label>${isUrdu ? "رپورٹ کی تفصیل" : "Report Description"}
+                  <input name="reportTitle" value="${esc(selectedLabel)}" required>
                 </label>
-                <label>Select Document File (PDF, JPG, PNG up to 10MB)
+                <label>${isUrdu ? "فائل منتخب کریں" : "Select Document File (PDF, JPG, PNG up to 10MB)"}
                   <input type="file" id="chat-file-input" name="reportFile" accept=".pdf,.jpg,.jpeg,.png" required>
                 </label>
                 <progress id="chat-upload-progress" value="0" max="100" style="display:none;width:100%;"></progress>
                 <small id="chat-upload-progress-text" aria-live="polite"></small>
-                <button class="primary-action wide-button" type="submit">Upload Document Now</button>
+                <button class="primary-action wide-button" type="submit">${isUrdu ? "رپورٹ اپ لوڈ کریں" : "Upload Document Now"}</button>
               </form>
             `,
-            quickReplies: [{ label: "🏠 Main Menu", action: "show_main_menu" }],
+            quickReplies: [{ label: isUrdu ? "🏠 مین مینو" : "🏠 Main Menu", action: "show_main_menu" }],
             time: "Now"
           });
         } else if (action.startsWith("reschedule_date_")) {
           const raw = action.replace("reschedule_date_", "");
           const [dVal, dLabel] = raw.split("_");
-          state.bookingState.date = dVal;
-          state.bookingState.dateLabel = dLabel || dVal;
+          state.rescheduleState.date = dVal;
+          state.rescheduleState.dateLabel = dLabel || dVal;
           pushMessage({ sender: "user", text: dLabel || dVal, time: "Now" });
           loadAvailableTimes("reschedule", dVal);
           break;
         } else if (action.startsWith("reschedule_time_")) {
           const raw = action.replace("reschedule_time_", "");
           const [tVal, tLabel] = raw.split("_");
+          state.rescheduleState.time = tVal;
+          state.rescheduleState.timeLabel = tLabel || tVal;
           pushMessage({ sender: "user", text: tLabel || tVal, time: "Now" });
 
           if (state.managedAppointment) {
+            const oldDate = state.managedAppointment.date;
+            const oldTime = timeLabel(state.managedAppointment.time);
+            pushMessage({
+              sender: "ai",
+              title: isUrdu ? "ری شیڈول ریویو" : "Review Reschedule Details",
+              html: `
+                <div class="structured-card">
+                  <div class="card-badge warning">${isUrdu ? "تبدیلی کا جائزہ" : "Proposed Change"}</div>
+                  <div class="card-detail-row">
+                    <span class="card-detail-label">🔴 ${isUrdu ? "پرانا وقت" : "Old Slot"}</span>
+                    <span class="card-detail-value">${esc(oldDate)} (${esc(oldTime)})</span>
+                  </div>
+                  <div class="card-detail-row" style="background: var(--light-mint); padding: 10px; border-radius: 8px; margin-top: 6px;">
+                    <span class="card-detail-label" style="color: var(--primary-dark-teal);">🟢 ${isUrdu ? "نیا وقت" : "New Slot"}</span>
+                    <span class="card-detail-value" style="color: var(--primary-dark-teal);">${esc(state.rescheduleState.dateLabel)} (${esc(tLabel || tVal)})</span>
+                  </div>
+                </div>
+              `,
+              quickReplies: [
+                { label: isUrdu ? "✅ ری شیڈول کی تصدیق کریں" : "✅ Confirm Reschedule", action: "reschedule_confirm_final" },
+                { label: isUrdu ? "↩️ منسوخ کریں" : "↩️ Go Back", action: "action_view_managed" }
+              ],
+              time: "Now"
+            });
+          }
+        } else if (action === "reschedule_confirm_final") {
+          if (state.managedAppointment && state.rescheduleState.date && state.rescheduleState.time) {
+            pushMessage({ sender: "user", text: isUrdu ? "✅ ری شیڈول کی تصدیق کریں" : "✅ Confirm Reschedule", time: "Now" });
             api.rescheduleAppointment(state.managedAppointment.appointmentId || state.managedAppointment._id, {
-              date: state.bookingState.date,
-              time: tVal,
+              date: state.rescheduleState.date,
+              time: state.rescheduleState.time,
               phone: state.activePhone
             }).then(res => {
               state.managedAppointment = res.appointment || state.managedAppointment;
-              state.managedAppointment.date = state.bookingState.date;
-              state.managedAppointment.time = tVal;
+              state.managedAppointment.date = state.rescheduleState.date;
+              state.managedAppointment.time = state.rescheduleState.time;
               pushMessage({
                 sender: "ai",
-                title: "✅ Appointment Rescheduled",
-                text: `Your appointment has been rescheduled successfully.\n\n📅 New Date: ${state.bookingState.dateLabel || state.bookingState.date}\n🕓 New Time: ${tLabel || tVal}\n🎫 Token Number: ${res.appointment?.tokenNumber || state.managedAppointment.tokenNumber}`,
+                title: isUrdu ? "✅ اپوائنٹمنٹ ری شیڈول ہو گئی" : "✅ Appointment Rescheduled",
+                text: isUrdu
+                  ? `آپ کی اپوائنٹمنٹ کامیابی سے ری شیڈول کر دی گئی ہے۔\n\n📅 نئی تاریخ: ${state.rescheduleState.dateLabel}\n🕓 نیا وقت: ${state.rescheduleState.timeLabel || state.rescheduleState.time}`
+                  : `Your appointment has been rescheduled successfully.\n\n📅 New Date: ${state.rescheduleState.dateLabel}\n🕓 New Time: ${state.rescheduleState.timeLabel || state.rescheduleState.time}\n🎫 Token: ${res.appointment?.tokenNumber || state.managedAppointment.tokenNumber}`,
                 quickReplies: [
-                  { label: "📋 View Details", action: "action_view_managed" },
-                  { label: "🏠 Main Menu", action: "show_main_menu" }
+                  { label: isUrdu ? "📋 تفصیلات دیکھیں" : "📋 View Appointment", action: "action_view_managed" },
+                  { label: isUrdu ? "🏠 مین مینو" : "🏠 Main Menu", action: "show_main_menu" }
                 ],
                 time: "Now"
               });
@@ -779,8 +1094,16 @@
           const [dVal, dLabel] = raw.split("_");
           state.bookingState.date = dVal;
           state.bookingState.dateLabel = dLabel || dVal;
-          state.currentStep = "booking_time";
           pushMessage({ sender: "user", text: dLabel || dVal, time: "Now" });
+
+          if (state.isChangingDetails) {
+            state.isChangingDetails = false;
+            showBookingReview();
+            break;
+          }
+
+          state.currentStep = "booking_time";
+          state.bookingStepIndex = 6;
           loadAvailableTimes("booking", dVal);
           break;
         } else if (action.startsWith("booking_time_")) {
@@ -789,6 +1112,8 @@
           state.bookingState.time = tVal;
           state.bookingState.timeLabel = tLabel || tVal;
           pushMessage({ sender: "user", text: tLabel || tVal, time: "Now" });
+
+          state.isChangingDetails = false;
           showBookingReview();
         }
         break;
@@ -799,7 +1124,10 @@
 
   async function showBookingReview() {
     state.currentStep = "booking_review";
+    state.bookingStepIndex = 7;
+    const isUrdu = state.lang === "ur";
     const isOnline = state.bookingState.appointmentType === "online";
+    
     if (!state.consentPolicy) {
       try {
         const response = await api.getAppointmentConsent();
@@ -812,13 +1140,46 @@
 
     pushMessage({
       sender: "ai",
-      title: "📋 Please Confirm Your Appointment",
-      text: `👨‍⚕️ Doctor: Dr. Sohaib\n👤 Patient: ${state.bookingState.patientName}\n📞 Phone: ${state.bookingState.phoneNumber || state.activePhone}\n${isOnline ? '💻 Appointment Type: Online Appointment' : '🏥 Appointment Type: In-Person\n📍 Clinic: Iqbal Hospital\n📌 Location: Noor Mahal Road, Bahawalpur'}\n📅 Date: ${state.bookingState.dateLabel || state.bookingState.date}\n🕓 Time: ${state.bookingState.timeLabel || state.bookingState.time}\n\n${state.consentPolicy.text}\n\nConsent version: ${state.consentPolicy.version}. Nothing is preselected; select “I Consent & Confirm” only if you agree.`,
+      title: isUrdu ? "✅ اپوائنٹمنٹ کا جائزہ اور تصدیق" : "✅ Review & Confirm Appointment",
+      html: `
+        <div class="structured-card">
+          <div class="card-badge info">${isUrdu ? "حتمی جائزہ" : "Review Details"}</div>
+          <div class="card-detail-row">
+            <span class="card-detail-label">👤 ${isUrdu ? "مریض" : "Patient"}</span>
+            <span class="card-detail-value">${esc(state.bookingState.patientName)}</span>
+          </div>
+          <div class="card-detail-row">
+            <span class="card-detail-label">📞 ${isUrdu ? "فون نمبر" : "Phone"}</span>
+            <span class="card-detail-value">${esc(state.bookingState.phoneNumber || state.activePhone)}</span>
+          </div>
+          <div class="card-detail-row">
+            <span class="card-detail-label">🏥 ${isUrdu ? "نوعیت" : "Type"}</span>
+            <span class="card-detail-value">${isOnline ? (isUrdu ? "آن لائن مشاورت" : "Online Consultation") : (isUrdu ? "ان پرسن کلینک" : "In-Person Clinic")}</span>
+          </div>
+          ${!isOnline ? `
+            <div class="card-detail-row">
+              <span class="card-detail-label">📍 ${isUrdu ? "کلینک" : "Clinic"}</span>
+              <span class="card-detail-value">${esc(state.bookingState.city === "Bahawalpur" ? "Iqbal Hospital, Bahawalpur" : state.bookingState.city)}</span>
+            </div>
+          ` : ''}
+          <div class="card-detail-row">
+            <span class="card-detail-label">📅 ${isUrdu ? "تاریخ" : "Date"}</span>
+            <span class="card-detail-value">${esc(state.bookingState.dateLabel || state.bookingState.date)}</span>
+          </div>
+          <div class="card-detail-row">
+            <span class="card-detail-label">🕒 ${isUrdu ? "وقت" : "Time"}</span>
+            <span class="card-detail-value">${esc(state.bookingState.timeLabel || state.bookingState.time)}</span>
+          </div>
+          <div style="margin-top: 10px; padding: 10px; background: var(--bg-neutral); border-radius: 8px; font-size: 0.78rem; color: var(--text-secondary);">
+            🔒 ${esc(state.consentPolicy.text)} (Consent v${esc(state.consentPolicy.version)})
+          </div>
+        </div>
+      `,
       quickReplies: [
-        { label: "✅ I Consent & Confirm", action: "confirm_booking_final" },
-        { label: "I Do Not Consent", action: "decline_booking_consent" },
-        { label: "✏️ Change Details", action: "change_booking_menu" },
-        { label: "❌ Cancel", action: "cancel_booking_prompt" }
+        { label: isUrdu ? "✅ تصدیق کریں اور بک کریں" : "✅ Confirm Appointment", action: "confirm_booking_final", isPrimary: true },
+        { label: isUrdu ? "✏️ تفصیلات تبدیل کریں" : "✏️ Change Details", action: "change_booking_menu" },
+        { label: isUrdu ? "❌ بکنگ منسوخ کریں" : "❌ Cancel Booking", action: "cancel_booking_prompt" },
+        { label: isUrdu ? "⬅️ واپس" : "⬅️ Back", action: "back_to_time" }
       ],
       time: "Now"
     });
@@ -829,6 +1190,7 @@
     const val = text.trim();
     if (!val) return;
     pushMessage({ sender: "user", text: val, time: "Now" });
+    const isUrdu = state.lang === "ur";
 
     if (state.conversationMode === "HUMAN") {
       api.createConversation({ phone: state.activePhone, message: val }).catch(() => {});
@@ -839,27 +1201,58 @@
     if (state.currentFlow === "booking") {
       if (state.currentStep === "booking_name") {
         state.bookingState.patientName = val;
+        
+        if (state.isChangingDetails) {
+          state.isChangingDetails = false;
+          showBookingReview();
+          return;
+        }
+
         state.currentStep = "booking_phone";
-        pushMessage({ sender: "ai", text: `Thank you, ${val}. Please enter your phone number.`, time: "Now" });
+        state.bookingStepIndex = 2;
+        pushMessage({
+          sender: "ai",
+          title: isUrdu ? "قدم ۲ از ۶: فون نمبر" : "Step 2 of 6: Phone Number",
+          text: isUrdu
+            ? `شکریہ ${val}۔ 📞 براہ کرم اپنا موبائل یا واٹس ایپ نمبر درج کریں:\nمثال: 0300 1234567`
+            : `Thank you, ${val}. 📞 Please enter your mobile / WhatsApp number.\nExample: 0300 1234567`,
+          quickReplies: [
+            { label: isUrdu ? "⬅️ واپس" : "⬅️ Back", action: "back_to_name" }
+          ],
+          time: "Now"
+        });
         renderChatView();
         return;
       } else if (state.currentStep === "booking_phone") {
         const cleanedPhone = val.replace(/[^\d+]/g, "");
         if (cleanedPhone.length < 7) {
-          pushMessage({ sender: "ai", text: "Please enter a valid phone number.", time: "Now" });
+          pushMessage({
+            sender: "ai",
+            text: isUrdu ? "براہ کرم درست فون نمبر درج کریں۔ (مثال: 0300 1234567)" : "Please enter a valid mobile number (e.g. 0300 1234567).",
+            time: "Now"
+          });
           renderChatView();
           return;
         }
         state.bookingState.phoneNumber = val;
         state.activePhone = val;
+
+        if (state.isChangingDetails) {
+          state.isChangingDetails = false;
+          showBookingReview();
+          return;
+        }
+
         state.currentStep = "booking_type";
+        state.bookingStepIndex = 3;
         pushMessage({
           sender: "ai",
-          title: "💻 Consultation Type",
-          text: "How would you like to consult Dr. Sohaib?",
+          title: isUrdu ? "قدم ۳ از ۶: اپوائنٹمنٹ کی قسم" : "Step 3 of 6: Consultation Type",
+          text: isUrdu ? "🏥 آپ ڈاکٹر صہیب سے کیسے مشورہ کرنا چاہتے ہیں؟" : "🏥 How would you like to consult Dr. Shoaib?",
           quickReplies: [
-            { label: "🏥 In-Person Appointment", action: "booking_type_in_person" },
-            { label: "💻 Online Appointment", action: "booking_type_online" }
+            { label: isUrdu ? "🏥 ان پرسن (کلینک) اپوائنٹمنٹ" : "🏥 In-Person Appointment", action: "booking_type_in_person" },
+            { label: isUrdu ? "💻 آن لائن اپوائنٹمنٹ" : "💻 Online Appointment", action: "booking_type_online" },
+            { label: isUrdu ? "⬅️ واپس" : "⬅️ Back", action: "back_to_phone" }
           ],
           time: "Now"
         });
@@ -871,9 +1264,14 @@
     if (/medicine|medication|drug|dose|prescribe/i.test(val)) {
       pushMessage({
         sender: "ai",
-        title: "⚠️ Medical Safety Notice",
-        text: "I can provide general information, but the doctor will need to assess you in person before giving medical advice or prescribing medication specific to your condition.",
-        quickReplies: [{ label: "📅 Book Appointment", action: "start_booking" }, { label: "🏠 Main Menu", action: "show_main_menu" }],
+        title: isUrdu ? "⚠️ میڈیکل سیفٹی الرٹ" : "⚠️ Medical Safety Notice",
+        text: isUrdu
+          ? "میں عام معلومات فراہم کر سکتا ہوں، لیکن کسی مخصوص دوا کی تجویز کے لیے ڈاکٹر کا خود جائزہ لینا ضروری ہے۔"
+          : "I can provide general clinic information, but the doctor will need to assess you in person before prescribing medication.",
+        quickReplies: [
+          { label: isUrdu ? "📅 اپوائنٹمنٹ بک کریں" : "📅 Book Appointment", action: "start_booking" },
+          { label: isUrdu ? "🏠 مین مینو" : "🏠 Main Menu", action: "show_main_menu" }
+        ],
         time: "Now"
       });
       renderChatView();
@@ -883,9 +1281,11 @@
     if (/emergency|urgent|chest pain|unconscious|bleeding/i.test(val)) {
       pushMessage({
         sender: "ai",
-        title: "🚨 Emergency Warning",
-        text: "This may require urgent medical attention. Please visit the nearest emergency department or contact your local emergency service immediately.",
-        quickReplies: [{ label: "🏠 Main Menu", action: "show_main_menu" }],
+        title: isUrdu ? "🚨 ایمرجنسی الرٹ" : "🚨 Emergency Warning",
+        text: isUrdu
+          ? "اس صورتحال میں فوری طبی امداد کی ضرورت ہو سکتی ہے۔ براہ کرم قریبی ایمرجنسی سنٹر تشریف لے جائیں۔"
+          : "This may require urgent medical attention. Please visit the nearest hospital emergency department immediately.",
+        quickReplies: [{ label: isUrdu ? "🏠 مین مینو" : "🏠 Main Menu", action: "show_main_menu" }],
         time: "Now"
       });
       renderChatView();
@@ -907,13 +1307,39 @@
     } else {
       pushMessage({
         sender: "ai",
-        text: "Thank you for reaching out to Dr. Sohaib Clinic. How may I help you today?",
-        quickReplies: [{ label: "📅 Book Appointment", action: "start_booking" }, { label: "🏠 Main Menu", action: "show_main_menu" }],
+        text: isUrdu ? "ڈاکٹر صہیب کلینک اسسٹنٹ میں خوش آمدید۔ میں آپ کی کیا مدد کر سکتا ہوں؟" : "Welcome to Dr. Shoaib Clinic Assistant. How may I help you today?",
+        quickReplies: [
+          { label: isUrdu ? "📅 اپوائنٹمنٹ بک کریں" : "📅 Book Appointment", action: "start_booking" },
+          { label: isUrdu ? "🏠 مین مینو" : "🏠 Main Menu", action: "show_main_menu" }
+        ],
         time: "Now"
       });
     }
 
     renderChatView();
+  }
+
+  // Helper for progress bar
+  function renderProgressBarHtml() {
+    if (state.currentFlow !== "booking" || state.bookingStepIndex <= 0) return "";
+    const isUrdu = state.lang === "ur";
+    const totalSteps = 6;
+    const current = Math.min(state.bookingStepIndex, totalSteps);
+    
+    let dots = "";
+    for (let i = 1; i <= totalSteps; i++) {
+      let cls = "progress-dot";
+      if (i < current) cls += " completed";
+      else if (i === current) cls += " active";
+      dots += `<div class="${cls}"></div>`;
+    }
+
+    return `
+      <div class="progress-bar-container">
+        <span>${isUrdu ? `قدم ${current} از ${totalSteps}` : `Step ${current} of ${totalSteps}`}</span>
+        <div class="progress-dots">${dots}</div>
+      </div>
+    `;
   }
 
   // ----------------------------------------------------
@@ -929,24 +1355,24 @@
           <div class="brand-lockup">
             <div class="logo">DS</div>
             <div>
-              <strong>Dr. Sohaib</strong>
+              <strong>Dr. Shoaib</strong>
               <small>Specialist Physician & Surgeon</small>
             </div>
           </div>
           <div class="presentation-copy">
-            <span class="eyebrow">${isUrdu ? "آفیشل اسسٹنٹ" : "Official Appointment Assistant"}</span>
-            <h1>${isUrdu ? "ڈاکٹر صہیب کلینک اسسٹنٹ" : "Dr. Sohaib Clinic Assistant"}</h1>
-            <p>Bilingual Automated Assistant & Appointment Management Portal</p>
+            <span class="eyebrow">${isUrdu ? "آفیشل پورٹل" : "Official Appointment Assistant"}</span>
+            <h1>${isUrdu ? "ڈاکٹر صہیب اسسٹنٹ" : "Dr. Shoaib AI Assistant"}</h1>
+            <p>Automated WhatsApp-style Appointment Booking & Clinic Portal</p>
           </div>
           <div class="clinic-mini">
             <div class="status-dot"></div>
             <div>
               <strong>Iqbal Hospital, Bahawalpur</strong>
-              <small>Noor Mahal Road, Bahawalpur (Mon - Thu, 4:30 PM - 8:30 PM)</small>
+              <small>Noor Mahal Road (Mon - Thu, 4:30 PM - 8:30 PM)</small>
             </div>
           </div>
           <button class="admin-entry" id="switch-to-admin">
-            <span>🔐 ${isUrdu ? "عملے کا لاگ ان" : "Staff & Clinic Dashboard"}</span>
+            <span>🔐 ${isUrdu ? "عملے کا پورٹل" : "Staff & Clinic Dashboard"}</span>
             <span>→</span>
           </button>
         </section>
@@ -954,36 +1380,24 @@
         <main class="chat-stage">
           <div class="phone">
             <header class="chat-header">
-              <div class="avatar">DS<span></span></div>
+              <div class="avatar-container">
+                <div class="avatar">👨‍⚕️</div>
+                <div class="online-dot"></div>
+              </div>
               <div class="chat-title">
-                <strong>Dr. Sohaib</strong>
-                <small>● ${state.conversationMode === "HUMAN" ? "Clinic Staff Connected" : (isUrdu ? "آن لائن (فعال اسسٹنٹ)" : "Automated Appointment Assistant")}</small>
+                <strong>Dr. Shoaib</strong>
+                <small>● ${state.conversationMode === "HUMAN" ? (isUrdu ? "عملہ آن لائن ہے" : "Clinic Staff Connected") : (isUrdu ? "AI اپوائنٹمنٹ اسسٹنٹ" : "AI Appointment Assistant")}</small>
               </div>
               <button class="header-button" id="lang-toggle-chat">🌐 ${isUrdu ? "English" : "اردو"}</button>
             </header>
 
             <div class="safety-strip">
-              🔒 ${isUrdu ? "محفوظ اپوائنٹمنٹ اور کلینک پورٹل" : "End-to-end Encrypted Appointment & Consultation Portal"}
+              🔒 ${isUrdu ? "محفوظ اپوائنٹمنٹ پورٹل" : "Secure Appointment & Consultation Portal"}
             </div>
 
-            <div class="chat-body" id="chat-body">
-              <div class="static-clinic-card" id="static-clinic-locations-card">
-                <h2>📍 ${isUrdu ? "کلینک کی معلومات" : "Clinic Locations"}</h2>
-                <div class="static-loc-item">
-                  <strong>Bahawalpur</strong>
-                  <p>🏥 Iqbal Hospital</p>
-                  <p>📍 Noor Mahal Road, Bahawalpur</p>
-                  <p>🗓 Monday to Thursday</p>
-                  <p>🕓 4:30 PM – 8:30 PM</p>
-                </div>
-                <div class="static-loc-item coming-soon">
-                  <strong>Bahawalnagar</strong> — <small>Coming Soon</small>
-                </div>
-                <div class="static-loc-item coming-soon">
-                  <strong>Rahim Yar Khan</strong> — <small>Coming Soon</small>
-                </div>
-              </div>
+            ${renderProgressBarHtml()}
 
+            <div class="chat-body" id="chat-body">
               ${state.chatMessages.map(msg => `
                 <div class="${msg.sender === 'user' ? 'patient-bubble' : 'bot-bubble'}">
                   ${msg.title ? `<h2>${esc(msg.title)}</h2>` : ''}
@@ -992,7 +1406,7 @@
                   ${msg.quickReplies && msg.quickReplies.length > 0 ? `
                     <div class="quick-replies-container">
                       ${msg.quickReplies.map(qr => `
-                        <button class="quick-reply-btn" data-action="${qr.action}">${esc(qr.label)}</button>
+                        <button class="quick-reply-btn ${qr.isPrimary ? 'primary-cta' : ''}" data-action="${qr.action}">${esc(qr.label)}</button>
                       `).join('')}
                     </div>
                   ` : ''}
@@ -1001,71 +1415,71 @@
 
               ${state.showMainMenuCard ? `
                 <div class="menu-card" id="main-menu-options-card">
-                  <p><strong>${isUrdu ? "ایک اختیار منتخب کریں:" : "Choose an option below:"}</strong></p>
-                  <div class="menu-grid">
-                    <button data-action="start_booking">
-                      <div class="menu-icon">📅</div>
-                      <div class="menu-text-container">
+                  <p><strong>${isUrdu ? "آپ کی کیا مدد کی جا سکتی ہے؟" : "How can I help you today?"}</strong></p>
+                  <div class="menu-poll-list">
+                    <button class="menu-poll-option" data-action="start_booking">
+                      <div class="menu-poll-icon">📅</div>
+                      <div class="menu-poll-content">
                         <strong>${isUrdu ? "اپوائنٹمنٹ بک کریں" : "Book Appointment"}</strong>
                         <small>${isUrdu ? "اقبال ہسپتال بہاولپور" : "Iqbal Hospital Bahawalpur"}</small>
                       </div>
-                      <span class="menu-arrow">→</span>
+                      <span class="menu-poll-chevron">→</span>
                     </button>
-                    <button data-action="manage_booking">
-                      <div class="menu-icon">📋</div>
-                      <div class="menu-text-container">
+                    <button class="menu-poll-option" data-action="manage_booking">
+                      <div class="menu-poll-icon">📋</div>
+                      <div class="menu-poll-content">
                         <strong>${isUrdu ? "اپوائنٹمنٹ مینیج کریں" : "Manage Appointment"}</strong>
                         <small>${isUrdu ? "دیکھیں / تبدیل / منسوخ" : "View / Reschedule / Cancel"}</small>
                       </div>
-                      <span class="menu-arrow">→</span>
+                      <span class="menu-poll-chevron">→</span>
                     </button>
-                    <button data-action="clinic_locations">
-                      <div class="menu-icon">📍</div>
-                      <div class="menu-text-container">
+                    <button class="menu-poll-option" data-action="clinic_locations">
+                      <div class="menu-poll-icon">🏥</div>
+                      <div class="menu-poll-content">
                         <strong>${isUrdu ? "کلینک کی معلومات" : "Clinic Information"}</strong>
-                        <small>${isUrdu ? "بہاولپور اور دیگر مقامات" : "Bahawalpur & Regional Clinics"}</small>
+                        <small>${isUrdu ? "بہاولپور اور دیگر کلینک" : "Bahawalpur & Regional Clinics"}</small>
                       </div>
-                      <span class="menu-arrow">→</span>
+                      <span class="menu-poll-chevron">→</span>
                     </button>
-                    <button data-action="treatment_info">
-                      <div class="menu-icon">🦴</div>
-                      <div class="menu-text-container">
-                        <strong>${isUrdu ? "علاج کی معلومات" : "Treatment Information"}</strong>
-                        <small>${isUrdu ? "جوڑوں اور سرجری معائنہ" : "Joints & Surgical Overview"}</small>
+                    <button class="menu-poll-option" data-action="treatment_info">
+                      <div class="menu-poll-icon">🩺</div>
+                      <div class="menu-poll-content">
+                        <strong>${isUrdu ? "علاج کی معلومات" : "Treatments & Services"}</strong>
+                        <small>${isUrdu ? "سرجری اور مشاہدہ" : "Surgical & Consultation Overview"}</small>
                       </div>
-                      <span class="menu-arrow">→</span>
+                      <span class="menu-poll-chevron">→</span>
                     </button>
-                    <button data-action="doctor_profile">
-                      <div class="menu-icon">👨‍⚕️</div>
-                      <div class="menu-text-container">
+                    <button class="menu-poll-option" data-action="doctor_profile">
+                      <div class="menu-poll-icon">👨‍⚕️</div>
+                      <div class="menu-poll-content">
                         <strong>${isUrdu ? "ڈاکٹر کا پروفائل" : "Doctor Profile"}</strong>
-                        <small>${isUrdu ? "معائنہ کی معلومات" : "Consultation Information"}</small>
+                        <small>${isUrdu ? "قابلیت اور اوقات" : "Qualifications & Timings"}</small>
                       </div>
-                      <span class="menu-arrow">→</span>
+                      <span class="menu-poll-chevron">→</span>
                     </button>
-                    <button data-action="booking_type_online">
-                      <div class="menu-icon">💻</div>
-                      <div class="menu-text-container">
+                    <button class="menu-poll-option" data-action="booking_type_online">
+                      <div class="menu-poll-icon">💻</div>
+                      <div class="menu-poll-content">
                         <strong>${isUrdu ? "آن لائن مشاورت" : "Online Consultation"}</strong>
                         <small>${isUrdu ? "ورچوئل کلینک درخواست" : "Virtual Clinic Request"}</small>
                       </div>
-                      <span class="menu-arrow">→</span>
+                      <span class="menu-poll-chevron">→</span>
                     </button>
-                    <button data-action="upload_report">
-                      <div class="menu-icon">📎</div>
-                      <div class="menu-text-container">
+                    <button class="menu-poll-option" data-action="upload_report">
+                      <div class="menu-poll-icon">📎</div>
+                      <div class="menu-poll-content">
                         <strong>${isUrdu ? "رپورٹ اپ لوڈ کریں" : "Upload Reports"}</strong>
-                        <small>${isUrdu ? "ایم آر آئی / ایکسرے / نسخہ" : "Upload MRI / X-ray / Prescriptions"}</small>
+                        <small>${isUrdu ? "ایکس رے / لیب / نسخہ" : "Upload X-ray / Lab / Prescriptions"}</small>
                       </div>
-                      <span class="menu-arrow">→</span>
+                      <span class="menu-poll-chevron">→</span>
                     </button>
-                    <button data-action="speak_to_staff">
-                      <div class="menu-icon">👤</div>
-                      <div class="menu-text-container">
-                        <strong>${isUrdu ? "عملے سے بات کریں" : "Speak to Staff"}</strong>
-                        <small>${isUrdu ? "انسان اسسٹنٹ رابطہ" : "Human Assistant Takeover"}</small>
+                    <button class="menu-poll-option" data-action="speak_to_staff">
+                      <div class="menu-poll-icon">👤</div>
+                      <div class="menu-poll-content">
+                        <strong>${isUrdu ? "عملے سے بات کریں" : "Speak to Clinic Staff"}</strong>
+                        <small>${isUrdu ? "کلینک اسسٹنٹ رابطہ" : "Human Assistant Takeover"}</small>
                       </div>
-                      <span class="menu-arrow">→</span>
+                      <span class="menu-poll-chevron">→</span>
                     </button>
                   </div>
                 </div>
@@ -1073,9 +1487,9 @@
             </div>
 
             <form class="composer" id="chat-composer">
-              <button type="button" class="attach" id="attach-file-btn">📎</button>
+              <button type="button" class="attach" id="attach-file-btn" title="Upload Document">📎</button>
               <input type="text" id="chat-input" placeholder="${isUrdu ? 'پیغام لکھیں...' : 'Type your message...'}" required>
-              <button type="submit">➤</button>
+              <button type="submit" aria-label="Send">➤</button>
             </form>
           </div>
         </main>
@@ -1666,6 +2080,7 @@
                   <th>Appointment / Token</th>
                   <th>Upload Date & Time</th>
                   <th>Status</th>
+                  <th>Staff Notes</th>
                   <th>Actions</th>
                 </tr>
               </thead>
@@ -1676,17 +2091,20 @@
                     <td>${esc(r.patient?.fullName || r.patientPhone)}</td>
                     <td>${r.patientPhone}</td>
                     <td><span class="badge confirmed">${esc((r.documentType || 'other').toUpperCase())}</span></td>
-                    <td>${esc(r.fileName)}</td>
+                    <td>${esc(r.fileName || r.originalFilename)}</td>
                     <td><strong style="color:var(--teal);">${r.tokenNumber ? '#' + r.tokenNumber : (r.appointmentId || '-')}</strong></td>
                     <td>${new Date(r.createdAt || Date.now()).toLocaleString()}</td>
                     <td><span class="badge ${r.status === 'New' || r.status === 'Uploaded' ? 'pending' : 'confirmed'}">${r.status}</span></td>
+                    <td style="max-width:140px; font-size:0.85rem; color:var(--muted);">${esc(r.notes || '-')}</td>
                     <td>
-                      ${['super_admin', 'doctor'].includes(state.user?.role) ? `<button class="primary-action btn-sm" onclick="window.openReportFile('${esc(r.reportId || r._id)}')" ${r.fileStatus !== 'active' ? 'disabled' : ''}>Download File</button>` : ''}
-                      ${r.fileStatus === 'active' && r.status !== 'Reviewed' && ['super_admin', 'doctor'].includes(state.user?.role) ? `<button class="primary-action btn-sm" style="background:#16a34a;" onclick="window.markReportReviewed('${r._id}')">Mark Reviewed</button>` : ''}
-                      ${state.user?.role === 'super_admin' ? `<button class="primary-action btn-sm" style="background:#b91c1c;" onclick="window.deleteReport('${esc(r.reportId || r._id)}')">Delete File</button>` : ''}
+                      ${['super_admin', 'doctor', 'receptionist'].includes(state.user?.role) ? `<button class="primary-action btn-sm" onclick="window.viewReportFile('${esc(r.reportId || r._id)}')" ${r.fileStatus !== 'active' ? 'disabled' : ''}>👁️ View</button>` : ''}
+                      ${['super_admin', 'doctor'].includes(state.user?.role) ? `<button class="primary-action btn-sm" style="background:#0284c7;" onclick="window.downloadReportFile('${esc(r.reportId || r._id)}')" ${r.fileStatus !== 'active' ? 'disabled' : ''}>⬇️ Download</button>` : ''}
+                      ${r.fileStatus === 'active' && r.status !== 'Reviewed' && ['super_admin', 'doctor'].includes(state.user?.role) ? `<button class="primary-action btn-sm" style="background:#16a34a;" onclick="window.markReportReviewed('${r._id}')">✅ Reviewed</button>` : ''}
+                      ${['super_admin', 'doctor', 'receptionist'].includes(state.user?.role) ? `<button class="primary-action btn-sm" style="background:#4f46e5;" onclick="window.addReportNotePrompt('${r._id}', '${esc(r.notes || '')}')">📝 Note</button>` : ''}
+                      ${state.user?.role === 'super_admin' ? `<button class="primary-action btn-sm" style="background:#b91c1c;" onclick="window.deleteReport('${esc(r.reportId || r._id)}')">🗑️ Delete</button>` : ''}
                     </td>
                   </tr>
-                `).join('') : `<tr><td colspan="9" style="text-align:center; padding:24px;">No medical reports uploaded yet.</td></tr>`}
+                `).join('') : `<tr><td colspan="10" style="text-align:center; padding:24px;">No medical reports uploaded yet.</td></tr>`}
               </tbody>
             </table>
           </div>
@@ -1694,7 +2112,18 @@
 
         document.getElementById("refresh-reports-btn")?.addEventListener("click", () => loadDashboardTabContent());
 
-        window.openReportFile = async (id) => {
+        window.viewReportFile = async (id) => {
+          try {
+            const result = await api.viewReport(id);
+            const objectUrl = URL.createObjectURL(result.blob);
+            window.open(objectUrl, "_blank");
+            setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
+          } catch (error) {
+            showToast("View error: " + error.message);
+          }
+        };
+
+        window.downloadReportFile = async (id) => {
           try {
             const result = await api.downloadReport(id);
             const objectUrl = URL.createObjectURL(result.blob);
@@ -1714,6 +2143,18 @@
           await api.updateReportStatus(id, "Reviewed");
           showToast("Report marked as Reviewed!");
           loadDashboardTabContent();
+        };
+
+        window.addReportNotePrompt = async (id, currentNote = "") => {
+          const note = window.prompt("Add or update staff note for this report:", currentNote || "");
+          if (note === null) return;
+          try {
+            await api.addReportNote(id, note);
+            showToast("Report note saved!");
+            loadDashboardTabContent();
+          } catch (error) {
+            showToast("Note error: " + error.message);
+          }
         };
 
         window.deleteReport = async (id) => {

@@ -57,8 +57,9 @@
     });
   }
 
-  async function downloadPrivateReport(id) {
-    const response = await fetch(`/api/reports/${encodeURIComponent(id)}/download`, {
+  async function downloadPrivateReport(id, inline = false) {
+    const query = inline ? "?inline=true" : "";
+    const response = await fetch(`/api/reports/${encodeURIComponent(id)}/download${query}`, {
       credentials: "include",
       headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {}
     });
@@ -117,12 +118,14 @@
     
     // Reports
     uploadReport: (formData, onProgress) => uploadMultipart("/reports/upload", formData, onProgress),
-    downloadReport: (id) => downloadPrivateReport(id),
+    downloadReport: (id) => downloadPrivateReport(id, false),
+    viewReport: (id) => downloadPrivateReport(id, true),
     deleteReport: (id) => request(`/reports/${encodeURIComponent(id)}`, { method: "DELETE" }),
     listReports: (query = "") => request(`/reports${query ? "?" + query : ""}`),
     getReportById: (id) => request(`/reports/${id}`),
     getReportsByAppointment: (appointmentId) => request(`/reports/appointment/${encodeURIComponent(appointmentId)}`),
     updateReportStatus: (id, status) => request(`/reports/${id}/status`, { method: "PUT", body: JSON.stringify({ status }) }),
+    addReportNote: (id, note) => request(`/reports/${id}/notes`, { method: "PUT", body: JSON.stringify({ notes: note }) }),
 
     // Consultations
     requestConsultation: (body) => request("/online-consultations", { method: "POST", body: JSON.stringify(body) }),
