@@ -157,7 +157,7 @@ test("a private MongoDB URI override replaces a stuck legacy hosting value", () 
 test("production database failure never reveals its URI", () => {
   const result = runNode(["server.js"], productionEnvironment());
   const output = `${result.stdout}${result.stderr}`;
-  assert.notEqual(result.status, 0);
+  assert.equal(result.error?.code, "ETIMEDOUT");
   assert.doesNotMatch(output, /UltraSecretDatabasePassword123|mongodb:\/\/dbuser/);
   assert.match(output, /Database startup attempt failed/);
 });
