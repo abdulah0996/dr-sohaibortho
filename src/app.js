@@ -1,0 +1,140 @@
+const path = require("path");
+const { randomUUID } = require("crypto");
+const express = require("express");
+const helmet = require("helmet");
+const cors = require("cors");
+const cookieParser = require("cookie-parser");
+const compression = require("compression");
+const mongoSanitize = require("express-mongo-sanitize");
+const mongoose = require("mongoose");
+const { config } = require("./config/env");
+const { apiLimiter, strictOrigin } = require("./middleware/security");
+const { notFoundHandler, errorHandler } = require("./middleware/errorHandler");
+const { forbidden } = require("./utils/errors");
+
+function createApp() {
+  const app = express();
+  const rootDir = path.resolve(__dirname, "..");
+
+  app.set("trust proxy", config.trustProxy);
+  app.disable("x-powered-by");
+
+  app.use((req, res, next) => {
+    const incoming = String(req.get("x-request-id") || "");
+    req.requestId = /^[a-zA-Z0-9._-]{8,100}$/.test(incoming) ? incoming : randomUUID();
+    res.setHeader("X-Request-Id", req.requestId);
+    next();
+  });
+
+  app.use((req, res, next) => {
+    if (!config.isProduction || req.secure) return next();
+    if (["GET", "HEAD"].includes(req.method) && !req.path.startsWith("/api/")) {
+      return res.redirect(308, `${new URL(config.frontendUrl).origin}${req.originalUrl}`);
+    }
+    return res.status(426).json({
+      success: false,
+      error: { code: "HTTPS_REQUIRED", message: "HTTPS is required." }
+    });
+  });
+
+  app.use(helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'", "'unsafe-inline'"],
+        styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+        fontSrc: ["'self'", "https://fonts.gstatic.com"],
+        imgSrc: ["'self'", "data:", "blob:"],
+        connectSrc: ["'self'"],
+        objectSrc: ["'none'"],
+        baseUri: ["'self'"],
+        frameAncestors: ["'none'"]
+      }
+    }
+  }));
+  app.use(compression());
+  app.use(cors({
+    origin(origin, callback) {
+      if (!origin) return callback(null, true);
+      if (config.corsOrigins.includes(origin)) return callback(null, true);
+      return callback(forbidden("Request origin is not allowed"));
+    },
+    credentials: true
+  }));
+  app.use(express.json({
+    limit: "10mb",
+    verify: (req, res, buf) => {
+      req.rawBody = buf;
+    }
+  }));
+  app.use(express.urlencoded({ extended: false, limit: "10mb" }));
+  app.use(cookieParser(config.cookieSecret));
+  app.use(mongoSanitize({ replaceWith: "_" }));
+  app.use(strictOrigin);
+  app.use("/api", apiLimiter);
+
+  // Hostinger requires the HTTP process to bind promptly. Keep all database-backed
+  // APIs fail-closed until MongoDB is genuinely connected; liveness, readiness and
+  // Meta's GET verification handshake remain available during a reconnect.
+  app.use("/api", (req, res, next) => {
+    if (!config.isProduction || mongoose.connection.readyState === 1) return next();
+    if (req.path === "/health" || req.path === "/health/ready") return next();
+    if (req.method === "GET" && req.path === "/whatsapp/webhook") return next();
+    return res.status(503).json({
+      success: false,
+      error: { code: "DATABASE_NOT_READY", message: "The service is starting. Please try again shortly." }
+    });
+  });
+
+  // Mount API Routes
+  app.use("/api/auth", require("./routes/auth"));
+  app.use("/api/appointments", require("./routes/appointments"));
+  app.use("/api/availability", require("./routes/availability"));
+  app.use("/api/whatsapp", require("./routes/whatsapp"));
+  app.use("/api/settings", require("./routes/settings"));
+  app.use("/api/clinic-locations", require("./routes/locations"));
+  app.use("/api/clinics", require("./routes/locations"));
+  app.use("/api/doctors", require("./routes/doctors"));
+  app.use("/api/health", require("./routes/health"));
+  app.use("/api/dashboard", require("./routes/dashboard"));
+  app.use("/api/reports", require("./routes/reports"));
+  app.use("/api/consultations", require("./routes/consultations"));
+  app.use("/api/online-consultations", require("./routes/consultations"));
+  app.use("/api/emergencies", require("./routes/emergencies"));
+  app.use("/api/emergency-alerts", require("./routes/emergencies"));
+  app.use("/api/conversations", require("./routes/conversations"));
+  app.use("/api/patients", require("./routes/patients"));
+  app.use("/api/reminders", require("./routes/reminders"));
+
+  const publicFiles = new Map([
+    ["/", "index.html"],
+    ["/index.html", "index.html"],
+    ["/style.css", "style.css"],
+    ["/api-client.js", "api-client.js"],
+    ["/script.js", "script.js"]
+  ]);
+
+  app.get(Array.from(publicFiles.keys()), (req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    res.sendFile(path.join(rootDir, publicFiles.get(req.path) || "index.html"));
+  });
+
+  app.get("*", (req, res, next) => {
+    if (req.path.startsWith("/api")) return next();
+    let decodedPath;
+    try { decodedPath = decodeURIComponent(req.path); }
+    catch { return next(); }
+    const segments = decodedPath.split("/").filter(Boolean);
+    const reserved = new Set(["src", "scripts", "tests", "docs", "node_modules", "private-storage", "logs", "dump", "backups"]);
+    if (segments.some((segment) => segment.startsWith(".")) || reserved.has(String(segments[0] || "").toLowerCase())) return next();
+    if (path.extname(decodedPath)) return next();
+    res.sendFile(path.join(rootDir, "index.html"));
+  });
+
+  app.use("/api", notFoundHandler);
+  app.use(errorHandler);
+
+  return app;
+}
+
+module.exports = { createApp };

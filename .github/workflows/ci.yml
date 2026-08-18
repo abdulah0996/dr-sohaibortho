@@ -1,0 +1,72 @@
+name: Complete QA
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  server-qa:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NODE_ENV: test
+      FRONTEND_URL: http://127.0.0.1:3000
+      CORS_ORIGINS: http://127.0.0.1:3000
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Syntax validation
+        run: npm run check:syntax
+      - name: Secret scan
+        run: npm run scan:secrets
+      - name: Legacy/demo scan
+        run: npm run scan:dummy
+      - name: Production dependency audit
+        run: npm audit --omit=dev --audit-level=high
+      - name: Unit tests
+        run: npm test
+      - name: API integration and endpoint permissions
+        run: npm run test:integration
+      - name: 50-request concurrency and appointment workflows
+        run: npm run test:appointment-engine
+      - run: npm run test:appointment-migration
+      - run: npm run test:whatsapp
+      - run: npm run test:medical-files
+      - run: npm run test:schedules
+      - run: npm run test:notifications
+      - run: npm run test:production-security
+      - name: Readiness and separate-database restore verification
+        run: npm run test:recovery
+
+  browser-qa:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      NODE_ENV: test
+      FRONTEND_URL: http://127.0.0.1:4173
+      CORS_ORIGINS: http://127.0.0.1:4173
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:browser
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-failure-artifacts
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7
