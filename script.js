@@ -142,7 +142,7 @@
     api.dates(state.bookingState.locationId || "BWP").then((response) => {
       const dates = (response.dates || []).slice(0, 10);
       const backAction = actionPrefix === "reschedule" ? "action_view_managed" : (state.bookingState.appointmentType === "online" ? "back_to_type" : "back_to_city");
-
+      
       const quickReplies = dates.map((entry) => ({
         label: `📅 ${dateLabel(entry.date)}`,
         action: `${actionPrefix}_date_${entry.date}_${dateLabel(entry.date)}`
@@ -186,7 +186,7 @@
     api.slots(state.bookingState.locationId || "BWP", date).then((response) => {
       const slots = (response.slots || []).filter((slot) => slot.available);
       const backAction = actionPrefix === "reschedule" ? "action_reschedule_appt" : "back_to_date";
-
+      
       const quickReplies = slots.map((slot) => ({
         label: `🕒 ${timeLabel(slot.time)}`,
         action: `${actionPrefix}_time_${slot.time}_${timeLabel(slot.time)}`
@@ -359,7 +359,7 @@
       case "booking_type_in_person":
         state.bookingState.appointmentType = "in_person";
         pushMessage({ sender: "user", text: isUrdu ? "🏥 ان پرسن اپوائنٹمنٹ" : "🏥 In-Person Appointment", time: "Now" });
-
+        
         if (state.isChangingDetails) {
           state.isChangingDetails = false;
           showBookingReview();
@@ -387,7 +387,7 @@
         state.bookingState.city = "Bahawalpur";
         state.bookingState.locationId = "BWP";
         pushMessage({ sender: "user", text: isUrdu ? "💻 آن لائن اپوائنٹمنٹ" : "💻 Online Appointment", time: "Now" });
-
+        
         if (state.isChangingDetails) {
           state.isChangingDetails = false;
           showBookingReview();
@@ -403,7 +403,7 @@
         state.bookingState.city = "Bahawalpur";
         state.bookingState.locationId = "BWP";
         pushMessage({ sender: "user", text: "📍 Bahawalpur (Iqbal Hospital)", time: "Now" });
-
+        
         if (state.isChangingDetails) {
           state.isChangingDetails = false;
           showBookingReview();
@@ -571,7 +571,7 @@
         }
         state.bookingState.idempotencyKey ||= (globalThis.crypto?.randomUUID?.() || `web-${Date.now()}-${Math.random().toString(36).slice(2)}`);
         pushMessage({ sender: "user", text: isUrdu ? "✅ میں متفق ہوں اور اپوائنٹمنٹ کی تصدیق کرتا ہوں" : "✅ I Consent & Confirm Appointment", time: "Now" });
-
+        
         api.book({
           fullName: state.bookingState.patientName,
           phone: state.bookingState.phoneNumber || state.activePhone,
@@ -587,7 +587,7 @@
           state.managedAppointment = appt;
           state.activePhone = state.bookingState.phoneNumber || state.activePhone;
           const isOnline = state.bookingState.appointmentType === "online";
-
+          
           state.currentFlow = "idle";
           state.currentStep = "booking_success";
           state.bookingStepIndex = 0;
@@ -631,7 +631,7 @@
                 <div class="card-detail-row" style="background: #e8f5f2; margin: 8px -16px -16px; padding: 12px 16px; border-radius: 0 0 16px 16px;">
                   <div>
                     <strong style="color: var(--primary-dark-teal); display: block; font-size: 0.95rem;">🆔 ID: ${esc(appt.appointmentId || appt._id)}</strong>
-                    <strong style="color: var(--secondary-teal); display: block; font-size: 1.1rem; margin-top: 2px;">🎫 Token Number: ${esc(appt.tokenNumber)}</strong>
+                    <strong style="color: var(--secondary-teal); display: block; font-size: 1.1rem; margin-top: 2px;">🎫 Token: ${esc(appt.tokenNumber)}</strong>
                   </div>
                 </div>
               </div>
@@ -805,7 +805,7 @@
               <div class="card-detail-row" style="background: #e8f5f2; margin: 8px -16px -16px; padding: 12px 16px; border-radius: 0 0 16px 16px;">
                 <div>
                   <strong style="color: var(--primary-dark-teal); display: block; font-size: 0.95rem;">🆔 ID: ${esc(mAppt.appointmentId || mAppt._id)}</strong>
-                  <strong style="color: var(--secondary-teal); display: block; font-size: 1.1rem; margin-top: 2px;">🎫 Token Number: ${esc(mAppt.tokenNumber)}</strong>
+                  <strong style="color: var(--secondary-teal); display: block; font-size: 1.1rem; margin-top: 2px;">🎫 Token: ${esc(mAppt.tokenNumber)}</strong>
                 </div>
               </div>
             </div>
@@ -1127,7 +1127,7 @@
     state.bookingStepIndex = 7;
     const isUrdu = state.lang === "ur";
     const isOnline = state.bookingState.appointmentType === "online";
-
+    
     if (!state.consentPolicy) {
       try {
         const response = await api.getAppointmentConsent();
@@ -1201,7 +1201,7 @@
     if (state.currentFlow === "booking") {
       if (state.currentStep === "booking_name") {
         state.bookingState.patientName = val;
-
+        
         if (state.isChangingDetails) {
           state.isChangingDetails = false;
           showBookingReview();
@@ -1325,7 +1325,7 @@
     const isUrdu = state.lang === "ur";
     const totalSteps = 6;
     const current = Math.min(state.bookingStepIndex, totalSteps);
-
+    
     let dots = "";
     for (let i = 1; i <= totalSteps; i++) {
       let cls = "progress-dot";
@@ -1750,7 +1750,7 @@
               <small>Admin Dashboard</small>
             </div>
           </div>
-
+          
           <nav>
             <div class="nav-section-title">MAIN</div>
             <button class="${state.adminTab === 'dashboard' ? 'active' : ''}" data-tab="dashboard">📊 Overview</button>
@@ -2067,7 +2067,7 @@
             </div>
             <button class="primary-action" id="refresh-reports-btn">🔄 Refresh Reports</button>
           </header>
-
+          
           <div class="responsive-table" style="margin-top:16px;">
             <table>
               <thead>

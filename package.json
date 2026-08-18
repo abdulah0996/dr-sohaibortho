@@ -24,8 +24,6 @@
     "test:appointment-engine": "node --test tests/appointment-engine.test.js",
     "test:appointment-migration": "node --test tests/appointment-migration.test.js",
     "test:whatsapp": "node --test tests/whatsapp.test.js",
-    "test:hybrid": "node --test --test-concurrency=1 tests/hybrid-conversation.test.js tests/hybrid-whatsapp.integration.test.js",
-    "test:all": "node --test --test-concurrency=1 tests/unit/*.test.js tests/*.test.js",
     "test:medical-files": "node --test tests/medical-files.test.js",
     "test:schedules": "node --test tests/schedules.test.js",
     "test:notifications": "node --test tests/notifications-consent-audit.test.js",
@@ -38,7 +36,7 @@
     "report:permissions": "node scripts/generate-endpoint-permission-report.js"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.0.0"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1106.0",

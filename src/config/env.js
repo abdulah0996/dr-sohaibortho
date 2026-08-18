@@ -82,21 +82,6 @@ const config = {
     text: read("APPOINTMENT_CONSENT_TEXT", "The clinic will use your information for appointment management, reminders, rescheduling, and clinic communications."),
     version: read("APPOINTMENT_CONSENT_VERSION", "appointment-consent-v1")
   },
-  ai: {
-    enabled: readBoolean("AI_CONCIERGE_ENABLED", false),
-    apiKey: read("OPENAI_API_KEY"),
-    model: read("OPENAI_MODEL", "gpt-4.1-mini").trim(),
-    transcriptionModel: read("OPENAI_TRANSCRIPTION_MODEL", "gpt-4o-mini-transcribe").trim(),
-    timeoutMs: readNumber("OPENAI_TIMEOUT_MS", 12000),
-    maxRetries: readNumber("OPENAI_MAX_RETRIES", 2),
-    rateLimitPerMinute: readNumber("OPENAI_RATE_LIMIT_PER_MINUTE", 20),
-    transcriptionConfidenceThreshold: readNumber("OPENAI_TRANSCRIPTION_CONFIDENCE_THRESHOLD", 0.55),
-    maxAudioBytes: readNumber("WHATSAPP_MAX_AUDIO_BYTES", 10 * 1024 * 1024)
-  },
-  emergencyGuidance: read(
-    "CLINIC_EMERGENCY_GUIDANCE",
-    "This may be an emergency. Please contact local emergency services or go to the nearest emergency department now."
-  ).trim(),
   defaultClinicLocationCode: read("DEFAULT_CLINIC_LOCATION_CODE", "BWP"),
   publicWhatsAppNumber: /^\+[1-9]\d{7,14}$/.test(rawPublicWhatsApp.replace(/[\s()-]/g, "")) ? rawPublicWhatsApp : "+923001234567",
   adminPanelUrl: read("ADMIN_PANEL_URL", read("FRONTEND_URL", "http://localhost:3000") + "/#/admin"),
@@ -125,6 +110,18 @@ const config = {
     signedUrlExpirySeconds: readNumber("STORAGE_SIGNED_URL_EXPIRY_SECONDS", 300),
     localPath: read("STORAGE_LOCAL_PATH", "private-storage").trim()
   },
+  aiConcierge: {
+    enabled: readBoolean("AI_CONCIERGE_ENABLED", true),
+    apiKey: read("OPENAI_API_KEY"),
+    model: read("OPENAI_MODEL", "gpt-5-mini").trim(),
+    transcriptionModel: read("OPENAI_TRANSCRIPTION_MODEL", "gpt-4o-mini-transcribe").trim(),
+    timeoutMs: readNumber("OPENAI_TIMEOUT_MS", 12000),
+    maxRetries: readNumber("OPENAI_MAX_RETRIES", 1),
+    rateLimitPerMinute: readNumber("AI_RATE_LIMIT_PER_MINUTE", 20),
+    maxAudioBytes: readNumber("WHATSAPP_AUDIO_MAX_BYTES", 8 * 1024 * 1024),
+    doctorWelcomeMediaId: read("WHATSAPP_DOCTOR_WELCOME_MEDIA_ID").trim(),
+    emergencyMessage: read("CLINIC_EMERGENCY_MESSAGE", "This may need urgent medical attention. Please contact local emergency services or go to the nearest emergency department now.").trim()
+  },
   whatsapp: {
     graphVersion: read("WHATSAPP_GRAPH_VERSION", "v20.0"),
     accessToken: read("WHATSAPP_ACCESS_TOKEN"),
@@ -141,8 +138,8 @@ const config = {
       rescheduleConfirmationLanguage: read("WHATSAPP_TEMPLATE_RESCHEDULE_CONFIRMATION_LANGUAGE", "en_US"),
       cancellationConfirmation: read("WHATSAPP_TEMPLATE_CANCELLATION_CONFIRMATION", "cancellation_confirmation_v1"),
       cancellationConfirmationLanguage: read("WHATSAPP_TEMPLATE_CANCELLATION_CONFIRMATION_LANGUAGE", "en_US"),
-      smartArrival: read("WHATSAPP_TEMPLATE_SMART_ARRIVAL", "").trim(),
-      smartArrivalLanguage: read("WHATSAPP_TEMPLATE_SMART_ARRIVAL_LANGUAGE", "en_US")
+      arrivalUpdate: read("WHATSAPP_TEMPLATE_ARRIVAL_UPDATE").trim(),
+      arrivalUpdateLanguage: read("WHATSAPP_TEMPLATE_ARRIVAL_UPDATE_LANGUAGE", "en_US")
     }
   }
 };
@@ -193,15 +190,17 @@ if (isProduction) {
       if (!templateNamePattern.test(name)) throw new Error(`Invalid production environment variable: ${nameKey}`);
       if (!languagePattern.test(language)) throw new Error(`Invalid production environment variable: ${languageKey}`);
     }
+    if (config.whatsapp.templates.arrivalUpdate) {
+      if (!templateNamePattern.test(config.whatsapp.templates.arrivalUpdate)) throw new Error("Invalid production environment variable: WHATSAPP_TEMPLATE_ARRIVAL_UPDATE");
+      if (!languagePattern.test(config.whatsapp.templates.arrivalUpdateLanguage)) throw new Error("Invalid production environment variable: WHATSAPP_TEMPLATE_ARRIVAL_UPDATE_LANGUAGE");
+    }
   }
-
-  if (config.ai.enabled) {
-    if (!strongSecret(config.ai.apiKey)) throw new Error("Missing or invalid production OpenAI API configuration.");
-    if (!/^[A-Za-z0-9._-]{2,100}$/.test(config.ai.model)) invalid("OPENAI_MODEL");
-    if (!/^[A-Za-z0-9._-]{2,100}$/.test(config.ai.transcriptionModel)) invalid("OPENAI_TRANSCRIPTION_MODEL");
-    if (!Number.isInteger(config.ai.timeoutMs) || config.ai.timeoutMs < 1000 || config.ai.timeoutMs > 60000) invalid("OPENAI_TIMEOUT_MS");
-    if (!Number.isInteger(config.ai.maxRetries) || config.ai.maxRetries < 0 || config.ai.maxRetries > 3) invalid("OPENAI_MAX_RETRIES");
+  if (config.aiConcierge.enabled && config.aiConcierge.apiKey && !strongSecret(config.aiConcierge.apiKey)) {
+    throw new Error("Invalid production environment variable: OPENAI_API_KEY");
   }
+  if (!Number.isInteger(config.aiConcierge.timeoutMs) || config.aiConcierge.timeoutMs < 1000 || config.aiConcierge.timeoutMs > 60000) invalid("OPENAI_TIMEOUT_MS");
+  if (!Number.isInteger(config.aiConcierge.maxRetries) || config.aiConcierge.maxRetries < 0 || config.aiConcierge.maxRetries > 2) invalid("OPENAI_MAX_RETRIES");
+  if (!Number.isInteger(config.aiConcierge.rateLimitPerMinute) || config.aiConcierge.rateLimitPerMinute < 1 || config.aiConcierge.rateLimitPerMinute > 120) invalid("AI_RATE_LIMIT_PER_MINUTE");
 }
 
 module.exports = { config, readBoolean };

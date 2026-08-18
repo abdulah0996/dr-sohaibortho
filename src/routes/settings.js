@@ -40,14 +40,6 @@ router.put("/clinic", requireAuth, requirePermission("settings.manage"), asyncHa
     })).length(7).optional(),
     remindersEnabled: z.boolean().optional(),
     reminderIntervalsMinutes: z.array(z.coerce.number().int().min(1).max(525600)).max(10).refine((values) => new Set(values).size === values.length, "Reminder intervals must be unique.").optional(),
-    arrivalLeadMinutes: z.coerce.number().int().min(0).max(120).optional(),
-    currentDelayMinutes: z.coerce.number().int().min(0).max(480).optional(),
-    delayEffectiveDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-    approvedDoctorWelcome: z.object({
-      enabled: z.boolean(),
-      mediaType: z.enum(["audio", "video"]),
-      mediaId: z.string().regex(/^[A-Za-z0-9._:-]{3,300}$/)
-    }).strict().optional(),
     confirmExistingAppointments: z.boolean().optional()
   }).strict(), req.body);
   const previous = await getClinicSettings();

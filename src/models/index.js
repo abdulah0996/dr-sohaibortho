@@ -21,10 +21,10 @@ const staffUserSchema = new Schema({
   name: { type: String, required: true, trim: true, maxlength: 120 },
   email: { type: String, required: true, unique: true, lowercase: true, trim: true },
   passwordHash: { type: String, required: true, select: false },
-  role: {
-    type: String,
-    enum: ["super_admin", "doctor", "receptionist", "clinic_staff"],
-    default: "clinic_staff"
+  role: { 
+    type: String, 
+    enum: ["super_admin", "doctor", "receptionist", "clinic_staff"], 
+    default: "clinic_staff" 
   },
   isActive: { type: Boolean, default: true },
   failedLoginAttempts: { type: Number, default: 0 },
@@ -58,20 +58,16 @@ const patientSchema = new Schema({
   gender: { type: String, enum: ["female", "male", "other", "not_provided"], default: "not_provided" },
   notes: { type: String, maxlength: 1000 },
   optOut: { type: Boolean, default: false },
-  doctorWelcomeSentAt: { type: Date }
+  knownProfiles: [{
+    normalizedName: { type: String, required: true, maxlength: 160 },
+    fullName: { type: String, required: true, maxlength: 160 },
+    age: { type: Number, min: 0, max: 130 },
+    relationship: { type: String, enum: ["self", "family", "unknown"], default: "unknown" },
+    lastVerifiedAt: { type: Date, required: true, default: Date.now }
+  }]
 }, baseOptions);
 
 patientSchema.index({ fullName: "text", phoneE164: "text" });
-
-const familyProfileSchema = new Schema({
-  contactPatient: { type: Schema.Types.ObjectId, ref: "Patient", required: true, index: true },
-  relationship: { type: String, required: true, trim: true, maxlength: 40 },
-  fullName: { type: String, required: true, trim: true, maxlength: 160 },
-  normalizedName: { type: String, required: true, trim: true, maxlength: 160 },
-  age: { type: Number, min: 0, max: 130 },
-  verifiedAt: { type: Date, required: true }
-}, baseOptions);
-familyProfileSchema.index({ contactPatient: 1, normalizedName: 1 }, { unique: true });
 
 // Patient Consent schema
 const patientConsentSchema = new Schema({
@@ -149,6 +145,9 @@ const clinicLocationSchema = new Schema({
     default: [],
     validate: { validator: (entries) => new Set(entries.map((entry) => `${entry.date}|${entry.time}`)).size === entries.length, message: "Blocked slots must be unique" }
   },
+  currentDelayMinutes: { type: Number, min: 0, max: 480, default: 0 },
+  delayUpdatedAt: { type: Date },
+  delayUpdatedBy: { type: Schema.Types.ObjectId, ref: "StaffUser" },
   displayOrder: { type: Number, default: 0 }
 }, baseOptions);
 
@@ -190,13 +189,13 @@ const appointmentSchema = new Schema({
   },
   phoneE164: { type: String, required: true, index: true },
   location: { type: Schema.Types.ObjectId, ref: "ClinicLocation", required: true, index: true },
-  locationSnapshot: {
-    clinicName: String,
-    city: String,
-    code: String,
-    address: String,
-    contactNumber: String,
-    timezone: String
+  locationSnapshot: { 
+    clinicName: String, 
+    city: String, 
+    code: String, 
+    address: String, 
+    contactNumber: String, 
+    timezone: String 
   },
   reason: { type: String, required: true, maxlength: 1000 },
   optionalNote: { type: String, maxlength: 1000 },
@@ -235,16 +234,17 @@ const appointmentSchema = new Schema({
   cancelledBy: { type: Schema.Types.ObjectId, ref: "StaffUser" },
   completedAt: { type: Date },
   arrivedAt: { type: Date },
-  visitSummary: {
-    patientName: { type: String, trim: true, maxlength: 160 },
+  patientProvidedVisitSummary: {
+    patientName: { type: String, maxlength: 160 },
     age: { type: Number, min: 0, max: 130 },
-    concern: { type: String, maxlength: 1000 },
-    existingCondition: { type: String, maxlength: 500 },
-    reportsAttached: { type: Number, min: 0, max: 50, default: 0 },
-    patientProvided: { type: Boolean, default: true },
+    concern: { type: String, maxlength: 500 },
+    existingConditionShared: { type: String, maxlength: 500 },
+    reportsAttached: { type: Number, min: 0, default: 0 },
+    disclaimer: { type: String, maxlength: 300 },
     approvedAt: { type: Date },
-    disclaimer: { type: String, maxlength: 300 }
+    source: { type: String, enum: ["whatsapp_text", "whatsapp_voice"] }
   },
+  doctorWelcomeSentAt: { type: Date },
   rescheduleHistory: [{
     previousLocation: { type: Schema.Types.ObjectId, ref: "ClinicLocation" },
     previousDate: String,
@@ -299,9 +299,11 @@ const conversationSessionSchema = new Schema({
   humanRequired: { type: Boolean, default: false },
   aiPaused: { type: Boolean, default: false },
   takenOverBy: { type: Schema.Types.ObjectId, ref: "StaffUser" },
+  handoffReason: { type: String, maxlength: 240 },
+  lastAiIntent: { type: String, maxlength: 60 },
+  lastAiConfidence: { type: Number, min: 0, max: 1 },
   lastMessageAt: { type: Date, default: Date.now },
-  serviceWindowExpiresAt: { type: Date },
-  identityVerifiedAt: { type: Date }
+  serviceWindowExpiresAt: { type: Date }
 }, baseOptions);
 
 conversationSessionSchema.index({ humanRequired: 1, aiPaused: 1, lastMessageAt: -1 });
@@ -365,15 +367,6 @@ const clinicSettingsSchema = new Schema({
       },
       message: "Reminder intervals must be unique and contain no more than ten values"
     }
-  },
-  arrivalLeadMinutes: { type: Number, min: 0, max: 120, default: 15 },
-  currentDelayMinutes: { type: Number, min: 0, max: 480 },
-  delayEffectiveDate: { type: String, match: /^\d{4}-\d{2}-\d{2}$/ },
-  approvedDoctorWelcome: {
-    enabled: { type: Boolean, default: false },
-    mediaType: { type: String, enum: ["audio", "video"] },
-    mediaId: { type: String, trim: true, maxlength: 300 },
-    approvedAt: { type: Date }
   },
   updatedBy: { type: Schema.Types.ObjectId, ref: "StaffUser" }
 }, baseOptions);
@@ -472,7 +465,7 @@ const reminderJobSchema = new Schema({
   appointment: { type: Schema.Types.ObjectId, ref: "Appointment", index: true },
   patient: { type: Schema.Types.ObjectId, ref: "Patient", index: true },
   phoneE164: { type: String, required: true, index: true },
-  type: { type: String, enum: ["appointment_reminder", "follow_up_reminder"], default: "appointment_reminder" },
+  type: { type: String, enum: ["appointment_reminder", "follow_up_reminder", "arrival_update"], default: "appointment_reminder" },
   dueAt: { type: Date, required: true, index: true },
   message: { type: String, required: true, maxlength: 2000 },
   status: { type: String, enum: REMINDER_DELIVERY_STATUSES, default: "pending" },
@@ -550,7 +543,6 @@ const models = {
   User: StaffUser, // Alias
   RefreshTokenSession: mongoose.model("RefreshTokenSession", refreshTokenSessionSchema),
   Patient,
-  FamilyProfile: mongoose.model("FamilyProfile", familyProfileSchema),
   PatientConsent: mongoose.model("PatientConsent", patientConsentSchema),
   BookingRequest: mongoose.model("BookingRequest", bookingRequestSchema),
   ClinicLocation,

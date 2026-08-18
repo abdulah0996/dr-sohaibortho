@@ -38,19 +38,10 @@ async function updateClinicSettings(input, staffUser, options = {}) {
   if (Object.keys(scheduleUpdate).length) {
     await updateLocation(location._id, scheduleUpdate, { confirmExistingAppointments: options.confirmExistingAppointments === true });
   }
-  if (["reminderIntervalsMinutes", "remindersEnabled", "arrivalLeadMinutes", "currentDelayMinutes", "delayEffectiveDate", "approvedDoctorWelcome"].some((key) => input[key] !== undefined)) {
+  if (input.reminderIntervalsMinutes !== undefined || input.remindersEnabled !== undefined) {
     const reminderUpdate = { updatedBy: staffUser?._id };
     if (input.reminderIntervalsMinutes !== undefined) reminderUpdate.reminderIntervalsMinutes = [...new Set(input.reminderIntervalsMinutes)].sort((a, b) => b - a);
     if (input.remindersEnabled !== undefined) reminderUpdate.remindersEnabled = input.remindersEnabled;
-    if (input.arrivalLeadMinutes !== undefined) reminderUpdate.arrivalLeadMinutes = input.arrivalLeadMinutes;
-    if (input.currentDelayMinutes !== undefined) reminderUpdate.currentDelayMinutes = input.currentDelayMinutes;
-    if (input.delayEffectiveDate !== undefined) reminderUpdate.delayEffectiveDate = input.delayEffectiveDate;
-    if (input.approvedDoctorWelcome !== undefined) {
-      reminderUpdate.approvedDoctorWelcome = {
-        ...input.approvedDoctorWelcome,
-        approvedAt: input.approvedDoctorWelcome.enabled ? new Date() : undefined
-      };
-    }
     await ClinicSettings.findOneAndUpdate(
       { key: "default" },
       { $set: reminderUpdate },
