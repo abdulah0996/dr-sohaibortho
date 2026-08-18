@@ -64,23 +64,34 @@ async function findOrCreatePatient(input) {
   if (!phoneE164) throw badRequest("A valid phone number is required.");
 
   const existing = await Patient.findOne({ phoneE164 });
-  const isFamilyMember = input.isFamilyMember === true;
-  const set = {
-    preferredLanguage: input.preferredLanguage || existing?.preferredLanguage || "en"
+  const preservePrimary = existing && input.patientFor === "family";
+  const update = {
+    $set: {
+      fullName: preservePrimary ? existing.fullName : input.fullName,
+      age: preservePrimary ? existing.age : input.age,
+      gender: input.gender || "not_provided",
+      preferredLanguage: input.preferredLanguage || "en"
+    }
   };
-  if (!existing || !isFamilyMember) {
-    set.fullName = input.fullName || existing?.fullName;
-    if (input.age !== undefined) set.age = input.age;
-    set.gender = input.gender || existing?.gender || "not_provided";
-  }
-  if (!set.fullName && !existing) throw badRequest("A patient name is required.");
-  const update = { $set: set };
   try {
-    return await Patient.findOneAndUpdate(
+    const patient = await Patient.findOneAndUpdate(
       { phoneE164 },
       update,
       { new: true, upsert: true, runValidators: true }
     );
+    if (input.patientFor && input.fullName) {
+      const normalizedName = String(input.fullName).trim().toLocaleLowerCase("en");
+      patient.knownProfiles = (patient.knownProfiles || []).filter((profile) => profile.normalizedName !== normalizedName).slice(-19);
+      patient.knownProfiles.push({
+        normalizedName,
+        fullName: String(input.fullName).trim(),
+        ...(Number.isInteger(input.age) ? { age: input.age } : {}),
+        relationship: input.patientFor,
+        lastVerifiedAt: new Date()
+      });
+      await patient.save();
+    }
+    return patient;
   } catch (error) {
     if (error.code !== 11000) throw error;
     return Patient.findOneAndUpdate({ phoneE164 }, update, { new: true, runValidators: true });
@@ -330,16 +341,6 @@ async function createAppointment(input, options = {}) {
     },
     reason: input.reason || "General Consultation",
     optionalNote: input.optionalNote || "",
-    visitSummary: input.visitSummary?.approvedAt ? {
-      patientName: input.visitSummary.patientName,
-      age: input.visitSummary.age,
-      concern: input.visitSummary.concern,
-      existingCondition: input.visitSummary.existingCondition,
-      reportsAttached: input.visitSummary.reportsAttached || 0,
-      patientProvided: true,
-      approvedAt: input.visitSummary.approvedAt,
-      disclaimer: "Patient-provided information; not an AI diagnosis."
-    } : undefined,
     date: input.date,
     time,
     slotTimezone: location.timezone,

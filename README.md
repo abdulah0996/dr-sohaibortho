@@ -2,8 +2,6 @@
 
 Node.js, Express, MongoDB and Meta WhatsApp Cloud API appointment and clinic-management system. Website and WhatsApp bookings share the same database-backed availability and appointment engine.
 
-The optional hybrid patient concierge accepts English, Urdu, Roman Urdu, mixed-language text, and WhatsApp voice notes. OpenAI is limited to structured intent/fact extraction and transcription; database-backed server tools remain authoritative for availability and every appointment mutation. See [the hybrid concierge operations guide](docs/HYBRID_AI_CONCIERGE.md).
-
 ## Local development
 
 Requirements: Node.js 18+, npm and MongoDB.
@@ -12,7 +10,6 @@ Requirements: Node.js 18+, npm and MongoDB.
 Copy-Item .env.example .env
 npm ci
 npm test
-npm run test:hybrid
 npm start
 ```
 

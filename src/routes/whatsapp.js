@@ -11,13 +11,11 @@ const {
   sendReplyButtons,
   sendInteractiveList,
   markMessageAsRead,
-  sendStaffMessage,
-  downloadMedia
+  sendStaffMessage
 } = require("../services/whatsappService");
 const { handleIncomingMessage } = require("../conversation/orchestrator");
-const { handleHybridMessage } = require("../conversation/hybridOrchestrator");
-const { createTranscriptionService, AUDIO_MIME_TYPES } = require("../services/transcriptionService");
-const { sendApprovedDoctorWelcome } = require("../services/visitExperienceService");
+const { transcribeWhatsAppVoiceNote } = require("../services/voiceTranscriptionService");
+const { storeWhatsAppReport } = require("../services/whatsappReportService");
 const { ConversationSession, WhatsAppMessage, Patient } = require("../models");
 const { requireAuth } = require("../middleware/auth");
 const { requirePermission } = require("../middleware/permissions");
@@ -26,30 +24,8 @@ const { asyncHandler } = require("../utils/asyncHandler");
 const { badRequest, forbidden, notFound } = require("../utils/errors");
 const { audit } = require("../services/auditService");
 const { normalizePhone } = require("../utils/security");
-const { logError } = require("../utils/safeLogger");
 
 const router = express.Router();
-const transcribe = createTranscriptionService();
-const patientMessageHandler = config.ai.enabled ? handleHybridMessage : handleIncomingMessage;
-
-function reportFilename(message, mimeType) {
-  if (message.filename) return message.filename;
-  if (mimeType === "application/pdf") return "medical-report.pdf";
-  if (mimeType === "image/png") return "medical-report.png";
-  return "medical-report.jpg";
-}
-
-async function sendPatientReply(phoneE164, reply) {
-  let result;
-  if (reply?.kind === "buttons") result = await sendReplyButtons(phoneE164, reply.body, reply.buttons);
-  else if (reply?.kind === "list") result = await sendInteractiveList(phoneE164, reply.body, reply.buttonText, reply.sections);
-  else if (reply?.body) result = await sendText(phoneE164, reply.body);
-  if (result?.status === "queued" && reply?.welcomeAppointmentId) {
-    const appointment = await require("../models").Appointment.findById(reply.welcomeAppointmentId);
-    if (appointment) await sendApprovedDoctorWelcome(appointment);
-  }
-  return result;
-}
 
 function validate(schema, body) {
   const parsed = schema.safeParse(body);
@@ -88,29 +64,42 @@ router.post("/webhook", webhookLimiter, asyncHandler(async (req, res) => {
       });
       if (logged.duplicate) return;
       await markMessageAsRead(message.metaMessageId).catch(() => undefined);
-      let reply;
-      if (message.body) {
-        reply = await patientMessageHandler({ phoneE164: message.phoneE164, text: message.body, replyId: message.replyId, messageId: message.metaMessageId });
-      } else if (config.ai.enabled && message.type === "audio" && message.mediaId) {
-        const media = await downloadMedia(message.mediaId, { allowedMimeTypes: AUDIO_MIME_TYPES, maxBytes: config.ai.maxAudioBytes });
-        const transcription = await transcribe(media);
-        if (!transcription.ok) reply = { body: "I couldn’t understand that voice note. Please send a short voice note again or type your request." };
-        else if (transcription.confidence < config.ai.transcriptionConfidenceThreshold) reply = { body: "I’m not fully sure I heard that correctly. Could you please say it once more in a short voice note or type it?" };
-        else reply = await patientMessageHandler({ phoneE164: message.phoneE164, text: transcription.text, messageId: message.metaMessageId });
-      } else if (config.ai.enabled && ["document", "image"].includes(message.type) && message.mediaId) {
-        const allowed = ["application/pdf", "image/jpeg", "image/png"];
-        const media = await downloadMedia(message.mediaId, { allowedMimeTypes: allowed, maxBytes: config.storage.maxUploadBytes });
-        reply = await handleHybridMessage.handleMedia({
-          phoneE164: message.phoneE164,
-          messageId: message.metaMessageId,
-          media: { ...media, filename: reportFilename(message, media.mimeType) }
-        });
+      if (["document", "image"].includes(message.type) && message.mediaId) {
+        const session = await ConversationSession.findOne({ phoneE164: message.phoneE164 });
+        if (session?.state !== "AWAITING_REPORT" || !session.context?.appointmentId) {
+          await sendText(message.phoneE164, "Please confirm an appointment first, then choose Upload Reports before attaching a PDF, JPEG, or PNG.");
+          return;
+        }
+        try {
+          const result = await storeWhatsAppReport({ phone: message.phoneE164, appointmentId: session.context.appointmentId, mediaId: message.mediaId, filename: message.filename });
+          await sendReplyButtons(message.phoneE164, `Report received securely. Total reports attached: ${result.reportCount}.`, [
+            { id: "AI_REPORTS_ADD", title: "Add Another" }, { id: "AI_REPORTS_DONE", title: "Done" }
+          ]);
+        } catch {
+          await sendText(message.phoneE164, "I couldn’t store that document securely. Please send a valid PDF, JPEG, or PNG within the size limit, or contact reception.");
+        }
+        return;
       }
-      if (reply && !reply.notificationQueued) await sendPatientReply(message.phoneE164, reply);
-    })().catch(async (error) => {
-      logError("WhatsApp processing failed", error, { requestId: req.requestId, messageType: message.type });
-      await sendText(message.phoneE164, "I’m sorry, I couldn’t complete that safely. Please try again or ask to speak with reception.").catch(() => undefined);
-    }));
+      let patientText = message.body;
+      let source = "text";
+      if (message.type === "audio" && message.mediaId) {
+        const transcription = await transcribeWhatsAppVoiceNote(message.mediaId);
+        if (!transcription.ok) {
+          await sendText(message.phoneE164, "I couldn’t understand that voice note clearly. Please send a shorter voice note or type your request.");
+          return;
+        }
+        patientText = transcription.text;
+        source = "voice";
+      }
+      if (patientText) {
+        const reply = await handleIncomingMessage({ phoneE164: message.phoneE164, text: patientText, replyId: message.replyId, messageId: message.metaMessageId, source });
+        if (!reply?.notificationQueued) {
+          if (reply?.kind === "buttons") await sendReplyButtons(message.phoneE164, reply.body, reply.buttons);
+          else if (reply?.kind === "list") await sendInteractiveList(message.phoneE164, reply.body, reply.buttonText, reply.sections);
+          else if (reply?.body) await sendText(message.phoneE164, reply.body);
+        }
+      }
+    })().catch((error) => console.error("WhatsApp processing failed", { requestId: req.requestId, name: error.name })));
   }
   res.json({ success: true });
   void Promise.allSettled(pending);
@@ -163,7 +152,7 @@ router.post("/simulate-message", requireAuth, requirePermission("conversations.m
   }
 
   // Handle message through AI orchestrator
-  const reply = await patientMessageHandler({
+  const reply = await handleIncomingMessage({
     phoneE164,
     text: input.message,
     language: input.language || session.language,
@@ -247,7 +236,7 @@ router.post("/conversations/:phone/reactivate-ai", requireAuth, requirePermissio
 router.post("/conversations/:phone/send", requireAuth, requirePermission("conversations.manage"), asyncHandler(async (req, res) => {
   const input = validate(z.object({ message: z.string().min(1).max(4000) }), req.body);
   const phoneE164 = normalizePhone(req.params.phone) || req.params.phone;
-
+  
   let session = await ConversationSession.findOne({ phoneE164 });
   if (!session) {
     session = await ConversationSession.create({

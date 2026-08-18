@@ -1,54 +1,41 @@
-const { MedicalReport } = require("../models");
-const { findOrCreatePatient } = require("./appointmentService");
+const { MedicalReport, Appointment } = require("../models");
+const { config } = require("../config/env");
+const { normalizePhone } = require("../utils/security");
+const { lookupAppointment } = require("./appointmentService");
 const { getMedicalFileStorage } = require("./medicalFileStorage");
 const { validateMedicalFile, createReportId } = require("./medicalFileService");
+const { downloadMetaMedia } = require("./whatsappService");
+const { audit } = require("./auditService");
 const { logError } = require("../utils/safeLogger");
 
-async function storeWhatsAppReport({ phoneE164, fullName, age, isFamilyMember, buffer, filename, mimeType }) {
-  const fileMetadata = validateMedicalFile({
-    buffer,
-    originalname: filename,
-    mimetype: mimeType
-  });
-  const patient = await findOrCreatePatient({
-    phone: phoneE164,
-    fullName,
-    age,
-    isFamilyMember,
-    preferredLanguage: "en"
-  });
+const MEDICAL_MIME_TYPES = ["application/pdf", "image/jpeg", "image/png"];
+
+async function storeWhatsAppReport({ phone, appointmentId, mediaId, filename, downloadMedia = downloadMetaMedia }) {
+  const phoneE164 = normalizePhone(phone);
+  const appointment = await lookupAppointment({ appointmentId, phone: phoneE164 });
+  const media = await downloadMedia(mediaId, { maxBytes: config.storage.maxUploadBytes, allowedMimeTypes: MEDICAL_MIME_TYPES });
+  const safeOriginalName = String(filename || `medical-report.${media.mimeType === "application/pdf" ? "pdf" : media.mimeType === "image/png" ? "png" : "jpg"}`).slice(0, 255);
+  const file = { buffer: media.buffer, size: media.fileSize, mimetype: media.mimeType, originalname: safeOriginalName };
+  const metadata = validateMedicalFile(file);
   const storage = getMedicalFileStorage();
   let stored = false;
   try {
-    await storage.putObject({ key: fileMetadata.storageKey, body: buffer, contentType: fileMetadata.mimeType });
+    await storage.putObject({ key: metadata.storageKey, body: media.buffer, contentType: metadata.mimeType });
     stored = true;
     const report = await MedicalReport.create({
-      reportId: createReportId(),
-      patient: patient._id,
-      patientPhone: phoneE164,
-      reportTitle: "Previous medical report",
-      documentType: "other",
-      ...fileMetadata,
-      uploadedByType: "patient",
-      uploadedAt: new Date(),
-      fileStatus: "active",
-      status: "New"
+      reportId: createReportId(), patient: appointment.patient, patientPhone: phoneE164,
+      appointmentId: appointment.appointmentId, tokenNumber: appointment.tokenNumber,
+      appointment: appointment._id, reportTitle: "Patient medical report", documentType: "other",
+      ...metadata, uploadedByType: "patient", uploadedAt: new Date(), fileStatus: "active", status: "New"
     });
-    return { reportId: report.reportId, id: String(report._id) };
+    const reportCount = await MedicalReport.countDocuments({ appointment: appointment._id, fileStatus: "active" });
+    await Appointment.updateOne({ _id: appointment._id }, { $set: { "patientProvidedVisitSummary.reportsAttached": reportCount } });
+    await audit({ actorType: "patient", actorPatient: appointment.patient, actorPhone: phoneE164, action: "report.uploaded_from_whatsapp", entityType: "report", entityId: String(report._id), metadata: { mimeType: report.mimeType, fileSize: report.fileSize, appointmentId: appointment.appointmentId } });
+    return { reportId: report.reportId, reportCount };
   } catch (error) {
-    if (stored) await storage.deleteObject({ key: fileMetadata.storageKey }).catch((cleanupError) => logError("Private WhatsApp upload cleanup failed", cleanupError));
+    if (stored) await storage.deleteObject({ key: metadata.storageKey }).catch((cleanupError) => logError("WhatsApp report cleanup failed", cleanupError));
     throw error;
   }
 }
 
-async function linkReportsToAppointment({ reportIds, phoneE164, appointment }) {
-  const ids = Array.from(new Set((reportIds || []).map(String))).slice(0, 50);
-  if (!ids.length) return 0;
-  const result = await MedicalReport.updateMany(
-    { _id: { $in: ids }, patientPhone: phoneE164, appointment: { $exists: false }, fileStatus: "active" },
-    { $set: { appointment: appointment._id, appointmentId: appointment.appointmentId, tokenNumber: appointment.tokenNumber } }
-  );
-  return result.modifiedCount;
-}
-
-module.exports = { storeWhatsAppReport, linkReportsToAppointment };
+module.exports = { MEDICAL_MIME_TYPES, storeWhatsAppReport };

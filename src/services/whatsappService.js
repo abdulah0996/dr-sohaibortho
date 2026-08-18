@@ -51,6 +51,32 @@ function safeFailure(data, httpStatus) {
   };
 }
 
+async function downloadMetaMedia(mediaId, { maxBytes, allowedMimeTypes } = {}) {
+  if (!isWhatsAppConfigured()) throw new Error("WhatsApp Cloud API is not configured.");
+  if (!/^\d{5,40}$/.test(String(mediaId || ""))) throw new Error("Invalid WhatsApp media identifier.");
+  const metadataResponse = await metaFetch(graphUrl(`${mediaId}?fields=id,mime_type,file_size`), {
+    headers: { Authorization: `Bearer ${config.whatsapp.accessToken}` },
+    signal: AbortSignal.timeout(10000)
+  });
+  const metadata = await metadataResponse.json().catch(() => ({}));
+  if (!metadataResponse.ok || !metadata.url) throw new Error("WhatsApp media metadata could not be retrieved.");
+  const mimeType = String(metadata.mime_type || "").split(";")[0].trim().toLowerCase();
+  const fileSize = Number(metadata.file_size || 0);
+  if (allowedMimeTypes?.length && !allowedMimeTypes.includes(mimeType)) throw new Error("Unsupported WhatsApp media type.");
+  if (!Number.isSafeInteger(fileSize) || fileSize <= 0 || (maxBytes && fileSize > maxBytes)) throw new Error("WhatsApp media size is invalid.");
+
+  const mediaResponse = await metaFetch(metadata.url, {
+    headers: { Authorization: `Bearer ${config.whatsapp.accessToken}` },
+    signal: AbortSignal.timeout(15000)
+  });
+  if (!mediaResponse.ok) throw new Error("WhatsApp media could not be downloaded.");
+  const contentLength = Number(mediaResponse.headers?.get?.("content-length") || 0);
+  if (maxBytes && contentLength > maxBytes) throw new Error("WhatsApp media exceeds the allowed size.");
+  const buffer = Buffer.from(await mediaResponse.arrayBuffer());
+  if (!buffer.length || buffer.length !== fileSize || (maxBytes && buffer.length > maxBytes)) throw new Error("WhatsApp media download was incomplete.");
+  return { buffer, mimeType, fileSize };
+}
+
 async function ensureSession(phoneE164, update = {}) {
   return ConversationSession.findOneAndUpdate(
     { phoneE164 },
@@ -154,51 +180,6 @@ async function sendText(to, body, options = {}) {
   return sendWhatsAppRequest(payload, phoneE164, body, options);
 }
 
-async function sendMedia(to, mediaType, mediaId, options = {}) {
-  const phoneE164 = normalizePhone(to);
-  if (!["audio", "video"].includes(mediaType) || !/^[A-Za-z0-9._:-]{3,300}$/.test(String(mediaId || ""))) {
-    throw new Error("Approved WhatsApp media configuration is invalid.");
-  }
-  const payload = {
-    messaging_product: "whatsapp",
-    recipient_type: "individual",
-    to: phoneE164.replace("+", ""),
-    type: mediaType,
-    [mediaType]: { id: mediaId }
-  };
-  return sendWhatsAppRequest(payload, phoneE164, "Approved doctor welcome media", options);
-}
-
-async function downloadMedia(mediaId, { allowedMimeTypes, maxBytes }) {
-  if (!isWhatsAppConfigured() || !/^[A-Za-z0-9._:-]{3,300}$/.test(String(mediaId || ""))) {
-    throw new Error("WhatsApp media is unavailable.");
-  }
-  const metadataResponse = await metaFetch(graphUrl(mediaId), {
-    headers: { Authorization: `Bearer ${config.whatsapp.accessToken}` },
-    signal: AbortSignal.timeout(10000)
-  });
-  const metadata = await metadataResponse.json().catch(() => ({}));
-  if (!metadataResponse.ok || !metadata.url) throw new Error("WhatsApp media metadata could not be retrieved.");
-  const mimeType = String(metadata.mime_type || "").toLowerCase().split(";")[0];
-  if (allowedMimeTypes?.length && !allowedMimeTypes.includes(mimeType)) throw new Error("WhatsApp media type is not supported.");
-  if (Number(metadata.file_size) > maxBytes) throw new Error("WhatsApp media exceeds the configured size limit.");
-  const mediaUrl = new URL(metadata.url);
-  const trustedMediaHost = ["facebook.com", "fbcdn.net", "fbsbx.com", "whatsapp.net"]
-    .some((domain) => mediaUrl.hostname === domain || mediaUrl.hostname.endsWith(`.${domain}`));
-  if (mediaUrl.protocol !== "https:" || !trustedMediaHost || mediaUrl.username || mediaUrl.password) throw new Error("WhatsApp media URL is invalid.");
-
-  const response = await metaFetch(mediaUrl.toString(), {
-    headers: { Authorization: `Bearer ${config.whatsapp.accessToken}` },
-    signal: AbortSignal.timeout(15000)
-  });
-  if (!response.ok) throw new Error("WhatsApp media could not be downloaded.");
-  const contentLength = Number(response.headers.get("content-length") || 0);
-  if (contentLength > maxBytes) throw new Error("WhatsApp media exceeds the configured size limit.");
-  const buffer = Buffer.from(await response.arrayBuffer());
-  if (!buffer.length || buffer.length > maxBytes) throw new Error("WhatsApp media size is invalid.");
-  return { buffer, mimeType: mimeType || String(response.headers.get("content-type") || "").split(";")[0], fileSize: buffer.length };
-}
-
 async function sendTemplate(to, templateName, languageCode, parameters = [], options = {}) {
   const phoneE164 = normalizePhone(to);
   if (!TEMPLATE_NAME_RE.test(String(templateName || ""))) {
@@ -267,6 +248,20 @@ async function sendInteractiveList(to, body, buttonText, sections, options = {})
     interactive: { type: "list", body: { text: body }, action: { button: buttonText.slice(0, 20), sections: normalizedSections } }
   };
   return sendWhatsAppRequest(payload, phoneE164, body, options);
+}
+
+async function sendMediaById(to, mediaType, mediaId, caption = "") {
+  if (!["audio", "video"].includes(mediaType)) throw new Error("Unsupported welcome media type.");
+  if (!/^\d{5,40}$/.test(String(mediaId || ""))) throw new Error("Invalid welcome media identifier.");
+  const phoneE164 = normalizePhone(to);
+  const media = { id: String(mediaId) };
+  if (caption && mediaType === "video") media.caption = String(caption).slice(0, 1024);
+  return sendWhatsAppRequest(
+    { messaging_product: "whatsapp", to: phoneE164.replace("+", ""), type: mediaType, [mediaType]: media },
+    phoneE164,
+    caption || "Doctor welcome message",
+    { senderType: "ai" }
+  );
 }
 
 async function markMessageAsRead(metaMessageId) {
@@ -394,7 +389,7 @@ function extractWebhookMessages(body) {
         replyTitle: message.interactive?.button_reply?.title || message.interactive?.list_reply?.title || message.button?.text || "",
         mediaId: message.image?.id || message.document?.id || message.audio?.id || message.video?.id || message.sticker?.id || "",
         filename: String(message.document?.filename || "").slice(0, 255),
-        mimeType: message.image?.mime_type || message.document?.mime_type || message.audio?.mime_type || message.video?.mime_type || ""
+        mimeType: String(message.document?.mime_type || message.image?.mime_type || message.audio?.mime_type || "").slice(0, 100)
       });
     }
   }
@@ -406,9 +401,9 @@ module.exports = {
   verifyMetaSignature,
   verifyWebhookToken,
   sendText,
-  sendMedia,
   sendReplyButtons,
   sendInteractiveList,
+  sendMediaById,
   sendTemplate,
   markMessageAsRead,
   isServiceWindowOpen,
@@ -416,6 +411,6 @@ module.exports = {
   logIncomingMessage,
   updateDeliveryStatus,
   extractWebhookMessages,
-  downloadMedia,
+  downloadMetaMedia,
   setMetaFetchForTests
 };

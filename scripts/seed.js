@@ -325,7 +325,7 @@ async function seed() {
       direction: "outgoing",
       senderType: isTakeover ? "staff" : "ai",
       senderStaff: isTakeover ? receptionUser._id : null,
-      body: isTakeover
+      body: isTakeover 
         ? `Welcome to Dr. Sohaib's Clinic. I am the receptionist. How can I help you?`
         : `Welcome to Dr. Sohaib's Appointment Assistant. Type 1 to Book Appointment.`,
       status: "delivered"

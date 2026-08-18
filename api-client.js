@@ -115,7 +115,7 @@
     appointments: (query = "") => request(`/appointments${query ? "?" + query : ""}`),
     getAppointmentById: (id) => request(`/appointments/${id}`),
     updateAppointmentStatus: (id, status) => request(`/appointments/${id}/status`, { method: "PATCH", body: JSON.stringify({ status }) }),
-
+    
     // Reports
     uploadReport: (formData, onProgress) => uploadMultipart("/reports/upload", formData, onProgress),
     downloadReport: (id) => downloadPrivateReport(id, false),
