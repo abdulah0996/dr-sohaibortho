@@ -148,9 +148,11 @@ async function main() {
   });
 }
 
-if (require.main === module) {
+function launch() {
   if (bootstrapError) startRestrictedBootstrapServer(bootstrapError);
-  else main();
+  else return main();
 }
 
-module.exports = { inspectInitialData, startServer, main, safeBootstrapReason, startRestrictedBootstrapServer };
+if (require.main === module) launch();
+
+module.exports = { inspectInitialData, startServer, main, launch, safeBootstrapReason, startRestrictedBootstrapServer };
