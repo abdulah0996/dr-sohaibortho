@@ -2,10 +2,10 @@
   "name": "dr-sohaib-whatsapp-assistant",
   "version": "1.0.0",
   "description": "Dr. Sohaib WhatsApp appointment and clinic management system.",
-  "main": "server.js",
+  "main": "hostinger.js",
   "type": "commonjs",
   "scripts": {
-    "start": "node server.js",
+    "start": "node hostinger.js",
     "dev": "nodemon server.js",
     "seed:demo": "node scripts/seed.js",
     "bootstrap:admin": "node scripts/create-super-admin.js",
