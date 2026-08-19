@@ -48,6 +48,9 @@ function normalizePublicUrl(value) {
   const quoted = (normalized.startsWith('"') && normalized.endsWith('"'))
     || (normalized.startsWith("'") && normalized.endsWith("'"));
   if (quoted) normalized = normalized.slice(1, -1).trim();
+  const embeddedUrl = normalized.match(/https?:\/\/[^\s,;'"<>\])]+/i);
+  if (embeddedUrl) normalized = embeddedUrl[0];
+  else if (/^[A-Z][A-Z0-9_]*=/i.test(normalized)) normalized = normalized.replace(/^[^=]+=/, "").trim();
   if (normalized && !/^[a-z][a-z0-9+.-]*:\/\//i.test(normalized)) {
     normalized = `https://${normalized.replace(/^\/+/, "")}`;
   }

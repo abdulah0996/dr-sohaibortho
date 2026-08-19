@@ -158,7 +158,7 @@ test("production normalizes safely quoted or scheme-less public URLs from hostin
   const result = runNode(
     ["-e", "const { config } = require('./src/config/env'); process.stdout.write(JSON.stringify({ frontendUrl: config.frontendUrl, corsOrigins: config.corsOrigins, adminPanelUrl: config.adminPanelUrl }))"],
     productionEnvironment({
-      FRONTEND_URL: '"clinic.example"',
+      FRONTEND_URL: "FRONTEND_URL=https://clinic.example,",
       CORS_ORIGINS: '"clinic.example"',
       ADMIN_PANEL_URL: "clinic.example/#/admin"
     })
