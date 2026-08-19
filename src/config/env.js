@@ -43,10 +43,32 @@ function readBoolean(name, fallback = false) {
   return String(value).trim().toLowerCase() === "true";
 }
 
+function normalizePublicUrl(value) {
+  let normalized = String(value || "").trim();
+  const quoted = (normalized.startsWith('"') && normalized.endsWith('"'))
+    || (normalized.startsWith("'") && normalized.endsWith("'"));
+  if (quoted) normalized = normalized.slice(1, -1).trim();
+  if (normalized && !/^[a-z][a-z0-9+.-]*:\/\//i.test(normalized)) {
+    normalized = `https://${normalized.replace(/^\/+/, "")}`;
+  }
+  if (isProduction && /^http:\/\//i.test(normalized)) {
+    try {
+      const parsed = new URL(normalized);
+      if (!["localhost", "127.0.0.1", "::1"].includes(parsed.hostname)) {
+        parsed.protocol = "https:";
+        normalized = parsed.toString();
+      }
+    } catch {
+      // Validation below reports malformed values without exposing their contents.
+    }
+  }
+  return normalized;
+}
+
 function readOrigins() {
   return read("CORS_ORIGINS", read("FRONTEND_URL", "http://localhost:3000"))
     .split(",")
-    .map((origin) => origin.trim())
+    .map(normalizePublicUrl)
     .filter(Boolean);
 }
 
@@ -59,6 +81,8 @@ const emailFrom = read("EMAIL_FROM", read("EMAIL_FROM_ADDRESS")).trim();
 const ownerEmail = read("OWNER_EMAIL", read("EMAIL_APPOINTMENT_ALERT_TO")).trim();
 const emailSecure = readBoolean("EMAIL_SECURE", readBoolean("SMTP_SECURE", false));
 const mongoUriOverride = String(process.env.MONGODB_URI_V2 || "").trim();
+const frontendUrl = normalizePublicUrl(read("FRONTEND_URL", "http://localhost:3000"));
+const adminPanelUrl = normalizePublicUrl(read("ADMIN_PANEL_URL", `${frontendUrl}/#/admin`));
 
 const rawContactNumber = read("CLINIC_CONTACT_NUMBER", "+923001234567").trim();
 const rawPublicWhatsApp = read("PUBLIC_WHATSAPP_NUMBER", "+923001234567").trim();
@@ -68,7 +92,7 @@ const config = {
   isProduction,
   port: readNumber("PORT", 3000),
   mongoUri: mongoUriOverride || read("MONGODB_URI", "mongodb://127.0.0.1:27017/dr-sohaib-whatsapp-chatbot").trim(),
-  frontendUrl: read("FRONTEND_URL", "http://localhost:3000"),
+  frontendUrl,
   corsOrigins: readOrigins(),
   jwtAccessSecret: read("JWT_ACCESS_SECRET", "dev-only-change-this-access-secret"),
   jwtRefreshSecret: read("JWT_REFRESH_SECRET", "dev-only-change-this-refresh-secret"),
@@ -84,7 +108,7 @@ const config = {
   },
   defaultClinicLocationCode: read("DEFAULT_CLINIC_LOCATION_CODE", "BWP"),
   publicWhatsAppNumber: /^\+[1-9]\d{7,14}$/.test(rawPublicWhatsApp.replace(/[\s()-]/g, "")) ? rawPublicWhatsApp : "+923001234567",
-  adminPanelUrl: read("ADMIN_PANEL_URL", read("FRONTEND_URL", "http://localhost:3000") + "/#/admin"),
+  adminPanelUrl,
   emailAppointmentAlert: {
     enabled: emailEnabled,
     to: ownerEmail,

@@ -154,6 +154,23 @@ test("a private MongoDB URI override replaces a stuck legacy hosting value", () 
   assert.equal(result.stdout, overrideUri);
 });
 
+test("production normalizes safely quoted or scheme-less public URLs from hosting panels", () => {
+  const result = runNode(
+    ["-e", "const { config } = require('./src/config/env'); process.stdout.write(JSON.stringify({ frontendUrl: config.frontendUrl, corsOrigins: config.corsOrigins, adminPanelUrl: config.adminPanelUrl }))"],
+    productionEnvironment({
+      FRONTEND_URL: '"clinic.example"',
+      CORS_ORIGINS: '"clinic.example"',
+      ADMIN_PANEL_URL: "clinic.example/#/admin"
+    })
+  );
+  assert.equal(result.status, 0);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    frontendUrl: "https://clinic.example",
+    corsOrigins: ["https://clinic.example"],
+    adminPanelUrl: "https://clinic.example/#/admin"
+  });
+});
+
 test("production database failure never reveals its URI", () => {
   const result = runNode(["-e", `
     const { connectDatabase } = require('./src/config/db');
