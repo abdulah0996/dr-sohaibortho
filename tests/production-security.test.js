@@ -171,6 +171,19 @@ test("production normalizes safely quoted or scheme-less public URLs from hostin
   });
 });
 
+test("production falls back to the dedicated HTTPS origin instead of accepting malformed URL or wildcard CORS values", () => {
+  const result = runNode(
+    ["-e", "const { config } = require('./src/config/env'); process.stdout.write(JSON.stringify({ frontendUrl: config.frontendUrl, corsOrigins: config.corsOrigins, adminPanelUrl: config.adminPanelUrl }))"],
+    productionEnvironment({ FRONTEND_URL: "not a URL", CORS_ORIGINS: "*", ADMIN_PANEL_URL: "invalid" })
+  );
+  assert.equal(result.status, 0);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    frontendUrl: "https://mediumpurple-alpaca-357282.hostingersite.com",
+    corsOrigins: ["https://mediumpurple-alpaca-357282.hostingersite.com"],
+    adminPanelUrl: "https://mediumpurple-alpaca-357282.hostingersite.com/#/admin"
+  });
+});
+
 test("production database failure never reveals its URI", () => {
   const result = runNode(["-e", `
     const { connectDatabase } = require('./src/config/db');

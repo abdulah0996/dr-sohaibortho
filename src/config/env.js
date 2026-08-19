@@ -16,6 +16,7 @@ const requiredInProduction = [
 
 const nodeEnv = process.env.NODE_ENV || "development";
 const isProduction = nodeEnv === "production";
+const defaultProductionOrigin = "https://mediumpurple-alpaca-357282.hostingersite.com";
 
 for (const key of requiredInProduction) {
   if (isProduction && !process.env[key]) {
@@ -68,11 +69,28 @@ function normalizePublicUrl(value) {
   return normalized;
 }
 
-function readOrigins() {
-  return read("CORS_ORIGINS", read("FRONTEND_URL", "http://localhost:3000"))
+function isValidPublicUrl(value, { originOnly = false } = {}) {
+  try {
+    const parsed = new URL(value);
+    if (parsed.username || parsed.password) return false;
+    if (isProduction ? parsed.protocol !== "https:" : !["http:", "https:"].includes(parsed.protocol)) return false;
+    if (isProduction && (parsed.hostname.includes("*") || !parsed.hostname.includes("."))) return false;
+    if (originOnly && (parsed.pathname !== "/" || parsed.search || parsed.hash)) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function readOrigins(frontendUrl) {
+  const origins = read("CORS_ORIGINS", frontendUrl)
     .split(",")
     .map(normalizePublicUrl)
+    .filter((origin) => isValidPublicUrl(origin, { originOnly: true }))
     .filter(Boolean);
+  const frontendOrigin = new URL(frontendUrl).origin;
+  if (!origins.includes(frontendOrigin)) origins.push(frontendOrigin);
+  return origins;
 }
 
 const emailEnabled = readBoolean("EMAIL_ENABLED", readBoolean("EMAIL_APPOINTMENT_ALERT_ENABLED", false));
@@ -84,8 +102,15 @@ const emailFrom = read("EMAIL_FROM", read("EMAIL_FROM_ADDRESS")).trim();
 const ownerEmail = read("OWNER_EMAIL", read("EMAIL_APPOINTMENT_ALERT_TO")).trim();
 const emailSecure = readBoolean("EMAIL_SECURE", readBoolean("SMTP_SECURE", false));
 const mongoUriOverride = String(process.env.MONGODB_URI_V2 || "").trim();
-const frontendUrl = normalizePublicUrl(read("FRONTEND_URL", "http://localhost:3000"));
-const adminPanelUrl = normalizePublicUrl(read("ADMIN_PANEL_URL", `${frontendUrl}/#/admin`));
+const requestedFrontendUrl = normalizePublicUrl(read("FRONTEND_URL", isProduction ? defaultProductionOrigin : "http://localhost:3000"));
+const frontendUrl = isValidPublicUrl(requestedFrontendUrl)
+  ? requestedFrontendUrl
+  : (isProduction ? defaultProductionOrigin : "http://localhost:3000");
+const requestedAdminPanelUrl = normalizePublicUrl(read("ADMIN_PANEL_URL", `${frontendUrl}/#/admin`));
+const adminPanelUrl = isValidPublicUrl(requestedAdminPanelUrl)
+  && new URL(requestedAdminPanelUrl).origin === new URL(frontendUrl).origin
+  ? requestedAdminPanelUrl
+  : `${frontendUrl}/#/admin`;
 
 const rawContactNumber = read("CLINIC_CONTACT_NUMBER", "+923001234567").trim();
 const rawPublicWhatsApp = read("PUBLIC_WHATSAPP_NUMBER", "+923001234567").trim();
@@ -96,7 +121,7 @@ const config = {
   port: readNumber("PORT", 3000),
   mongoUri: mongoUriOverride || read("MONGODB_URI", "mongodb://127.0.0.1:27017/dr-sohaib-whatsapp-chatbot").trim(),
   frontendUrl,
-  corsOrigins: readOrigins(),
+  corsOrigins: readOrigins(frontendUrl),
   jwtAccessSecret: read("JWT_ACCESS_SECRET", "dev-only-change-this-access-secret"),
   jwtRefreshSecret: read("JWT_REFRESH_SECRET", "dev-only-change-this-refresh-secret"),
   cookieSecret: read("COOKIE_SECRET", "dev-only-change-this-cookie-secret"),
