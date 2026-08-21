@@ -300,6 +300,15 @@ async function logIncomingMessage({ metaMessageId, phoneE164, body, messageType 
   const normalizedPhone = normalizePhone(phoneE164);
   const serviceWindowExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
   const session = await ensureSession(normalizedPhone, { serviceWindowExpiresAt });
+  // Meta re-delivers the same event (same wamid) whenever it does not receive a
+  // timely 2xx, so replays must never be answered twice. The unique index on
+  // metaMessageId is the primary guard, but production connects with autoIndex
+  // disabled, so that index only exists once the index migration has been run.
+  // Check explicitly as well; the E11000 catch below stays as the race backstop.
+  if (metaMessageId) {
+    const alreadySeen = await WhatsAppMessage.exists({ metaMessageId, direction: "incoming" });
+    if (alreadySeen) return { duplicate: true, session };
+  }
   try {
     const message = await WhatsAppMessage.create({
       metaMessageId,

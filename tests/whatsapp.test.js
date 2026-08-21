@@ -160,6 +160,66 @@ test("webhook verification, signatures, greeting and natural booking work", asyn
     && request.payload.interactive.action.sections[0].rows.some((row) => row.id.startsWith("AI_TIME_"))));
 });
 
+test("a replayed Meta event is answered exactly once, even without the unique index", async () => {
+  // Production connects with autoIndex disabled (src/config/db.js), so the
+  // metaMessageId unique index only exists after the index migration has run.
+  // Drop it here to reproduce that database state faithfully.
+  await WhatsAppMessage.collection.dropIndex("metaMessageId_1").catch(() => undefined);
+  const indexesBefore = await WhatsAppMessage.collection.indexInformation();
+  assert.equal(Object.keys(indexesBefore).includes("metaMessageId_1"), false, "index must be absent for this test to be meaningful");
+
+  try {
+    const event = incomingWebhook({ id: "wamid.meta.retry", text: "Hi" });
+
+    assert.equal((await postWebhook(event)).status, 200);
+    await waitFor(() => metaRequests.some((request) => request.payload.type === "interactive"));
+    const afterFirst = metaRequests.filter((request) => request.payload.type === "interactive").length;
+    assert.equal(afterFirst, 1);
+
+    // Meta re-delivers the identical event after a missed 2xx.
+    assert.equal((await postWebhook(event)).status, 200);
+    assert.equal((await postWebhook(event)).status, 200);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    const outgoing = metaRequests.filter((request) => request.payload.type === "interactive");
+    assert.equal(outgoing.length, 1, "a replayed event must not produce another reply");
+    assert.equal(await WhatsAppMessage.countDocuments({ metaMessageId: "wamid.meta.retry", direction: "incoming" }), 1);
+
+    // A genuinely new message is still processed normally.
+    assert.equal((await postWebhook(incomingWebhook({ id: "wamid.meta.fresh", text: "Hi" }))).status, 200);
+    await waitFor(() => metaRequests.filter((request) => request.payload.type === "interactive").length === 2);
+  } finally {
+    // Clear first: leftover duplicates would make index creation fail and would
+    // silently leave later tests running without the guard.
+    await WhatsAppMessage.deleteMany({});
+    await WhatsAppMessage.createIndexes();
+  }
+});
+
+test("a replayed Meta event never rewinds an in-progress booking", async () => {
+  await WhatsAppMessage.collection.dropIndex("metaMessageId_1").catch(() => undefined);
+  try {
+    const greeting = incomingWebhook({ id: "wamid.replay.greeting", text: "Hi" });
+    assert.equal((await postWebhook(greeting)).status, 200);
+    await waitFor(() => ConversationSession.findOne({ phoneE164: "+923001234567" }));
+
+    assert.equal((await postWebhook(incomingWebhook({ id: "wamid.replay.book", text: "I need an appointment Monday" }))).status, 200);
+    const booking = await waitFor(() => ConversationSession.findOne({ phoneE164: "+923001234567", state: "BOOKING_TIME" }));
+    assert.ok(booking);
+
+    // Replaying the earlier greeting must not reset the patient back to the menu.
+    assert.equal((await postWebhook(greeting)).status, 200);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const after = await ConversationSession.findOne({ phoneE164: "+923001234567" });
+    assert.equal(after.state, "BOOKING_TIME", "a duplicate greeting must not discard booking progress");
+  } finally {
+    // Clear first: leftover duplicates would make index creation fail and would
+    // silently leave later tests running without the guard.
+    await WhatsAppMessage.deleteMany({});
+    await WhatsAppMessage.createIndexes();
+  }
+});
+
 test("secure report upload is offered once after selecting a real slot", async () => {
   const phone = "+923001234567";
   let reply = await handleIncomingMessage({ phoneE164: phone, text: "Appointment Monday", messageId: "upload-start" });
