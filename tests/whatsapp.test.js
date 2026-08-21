@@ -83,16 +83,19 @@ function incomingWebhook({ id, phone = "923001234567", text, replyId, replyTitle
 }
 
 async function reachBookingReview(phone = "+923001234567") {
+  // New journey: date (stated here) -> time -> name -> concern -> reports -> review -> consent.
   let reply = await handleIncomingMessage({ phoneE164: phone, text: "I need an appointment on Monday", messageId: "direct-book" });
+  assert.equal(reply.kind, "list");
+  const timeId = reply.sections[0].rows.find((row) => row.id.startsWith("AI_TIME_")).id;
+  reply = await handleIncomingMessage({ phoneE164: phone, text: "Time", replyId: timeId, messageId: "direct-time" });
   assert.match(reply.body, /full name/i);
   reply = await handleIncomingMessage({ phoneE164: phone, text: "WhatsApp Test Patient", messageId: "direct-name" });
   assert.match(reply.body, /what would you like/i);
-  reply = await handleIncomingMessage({ phoneE164: phone, text: "Knee pain follow-up", messageId: "direct-reason" });
-  const timeId = reply.buttons.find((button) => button.id.startsWith("AI_TIME_")).id;
-  reply = await handleIncomingMessage({ phoneE164: phone, text: "Time", replyId: timeId, messageId: "direct-time" });
+  const concernId = reply.sections[0].rows.find((row) => row.id.startsWith("AI_CONCERN_")).id;
+  reply = await handleIncomingMessage({ phoneE164: phone, text: "Knee pain follow-up", replyId: concernId, messageId: "direct-reason" });
   assert.equal(reply.buttons[0].id, "AI_REPORTS_YES");
   reply = await handleIncomingMessage({ phoneE164: phone, text: "No reports", replyId: "AI_REPORTS_NO", messageId: "direct-reports" });
-  assert.match(reply.body, /Visit Summary/i);
+  assert.match(reply.body, /Appointment Summary/i);
   reply = await handleIncomingMessage({ phoneE164: phone, text: "Correct", replyId: "AI_SUMMARY_OK", messageId: "direct-summary" });
   assert.match(reply.body, /consent/i);
   reply = await handleIncomingMessage({ phoneE164: phone, text: "Yes", replyId: "AI_CONSENT_YES", messageId: "direct-consent" });
@@ -140,34 +143,107 @@ test("webhook verification, signatures, greeting and natural booking work", asyn
   const greeting = await postWebhook(incomingWebhook({ id: "wamid.hi", text: "Hi" }));
   assert.equal(greeting.status, 200);
   await waitFor(() => WhatsAppMessage.exists({ metaMessageId: "wamid.hi" }));
-  await waitFor(() => metaRequests.some((request) => request.payload.type === "text" && /Smart Clinic Assistant/.test(request.payload.text.body)));
+  // The greeting is a WhatsApp interactive list (the clinic menu), not plain text.
+  await waitFor(() => metaRequests.some((request) =>
+    request.payload.type === "interactive"
+    && request.payload.interactive.type === "list"
+    && /Assalam-o-Alaikum/i.test(request.payload.interactive.body.text)));
 
   const booking = await postWebhook(incomingWebhook({ id: "wamid.book", text: "I need an appointment on Monday" }));
   assert.equal(booking.status, 200);
-  const session = await waitFor(() => ConversationSession.findOne({ phoneE164: "+923001234567", state: "BOOKING_NAME" }));
+  // A stated date goes straight to the real 20-minute slot picker.
+  const session = await waitFor(() => ConversationSession.findOne({ phoneE164: "+923001234567", state: "BOOKING_TIME" }));
   assert.ok(session);
-  await waitFor(() => metaRequests.some((request) => request.payload.type === "text" && /full name/i.test(request.payload.text.body)));
+  await waitFor(() => metaRequests.some((request) =>
+    request.payload.type === "interactive"
+    && request.payload.interactive.type === "list"
+    && request.payload.interactive.action.sections[0].rows.some((row) => row.id.startsWith("AI_TIME_"))));
+});
+
+test("a replayed Meta event is answered exactly once, even without the unique index", async () => {
+  // Production connects with autoIndex disabled (src/config/db.js), so the
+  // metaMessageId unique index only exists after the index migration has run.
+  // Drop it here to reproduce that database state faithfully.
+  await WhatsAppMessage.collection.dropIndex("metaMessageId_1").catch(() => undefined);
+  const indexesBefore = await WhatsAppMessage.collection.indexInformation();
+  assert.equal(Object.keys(indexesBefore).includes("metaMessageId_1"), false, "index must be absent for this test to be meaningful");
+
+  try {
+    const event = incomingWebhook({ id: "wamid.meta.retry", text: "Hi" });
+
+    assert.equal((await postWebhook(event)).status, 200);
+    await waitFor(() => metaRequests.some((request) => request.payload.type === "interactive"));
+    const afterFirst = metaRequests.filter((request) => request.payload.type === "interactive").length;
+    assert.equal(afterFirst, 1);
+
+    // Meta re-delivers the identical event after a missed 2xx.
+    assert.equal((await postWebhook(event)).status, 200);
+    assert.equal((await postWebhook(event)).status, 200);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    const outgoing = metaRequests.filter((request) => request.payload.type === "interactive");
+    assert.equal(outgoing.length, 1, "a replayed event must not produce another reply");
+    assert.equal(await WhatsAppMessage.countDocuments({ metaMessageId: "wamid.meta.retry", direction: "incoming" }), 1);
+
+    // A genuinely new message is still processed normally.
+    assert.equal((await postWebhook(incomingWebhook({ id: "wamid.meta.fresh", text: "Hi" }))).status, 200);
+    await waitFor(() => metaRequests.filter((request) => request.payload.type === "interactive").length === 2);
+  } finally {
+    // Clear first: leftover duplicates would make index creation fail and would
+    // silently leave later tests running without the guard.
+    await WhatsAppMessage.deleteMany({});
+    await WhatsAppMessage.createIndexes();
+  }
+});
+
+test("a replayed Meta event never rewinds an in-progress booking", async () => {
+  await WhatsAppMessage.collection.dropIndex("metaMessageId_1").catch(() => undefined);
+  try {
+    const greeting = incomingWebhook({ id: "wamid.replay.greeting", text: "Hi" });
+    assert.equal((await postWebhook(greeting)).status, 200);
+    await waitFor(() => ConversationSession.findOne({ phoneE164: "+923001234567" }));
+
+    assert.equal((await postWebhook(incomingWebhook({ id: "wamid.replay.book", text: "I need an appointment Monday" }))).status, 200);
+    const booking = await waitFor(() => ConversationSession.findOne({ phoneE164: "+923001234567", state: "BOOKING_TIME" }));
+    assert.ok(booking);
+
+    // Replaying the earlier greeting must not reset the patient back to the menu.
+    assert.equal((await postWebhook(greeting)).status, 200);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const after = await ConversationSession.findOne({ phoneE164: "+923001234567" });
+    assert.equal(after.state, "BOOKING_TIME", "a duplicate greeting must not discard booking progress");
+  } finally {
+    // Clear first: leftover duplicates would make index creation fail and would
+    // silently leave later tests running without the guard.
+    await WhatsAppMessage.deleteMany({});
+    await WhatsAppMessage.createIndexes();
+  }
 });
 
 test("secure report upload is offered once after selecting a real slot", async () => {
   const phone = "+923001234567";
-  await handleIncomingMessage({ phoneE164: phone, text: "Appointment Monday", messageId: "upload-start" });
-  await handleIncomingMessage({ phoneE164: phone, text: "Report Test Patient", messageId: "upload-name" });
-  let reply = await handleIncomingMessage({ phoneE164: phone, text: "Shoulder pain", messageId: "upload-reason" });
-  const timeId = reply.buttons.find((button) => button.id.startsWith("AI_TIME_")).id;
+  let reply = await handleIncomingMessage({ phoneE164: phone, text: "Appointment Monday", messageId: "upload-start" });
+  const timeId = reply.sections[0].rows.find((row) => row.id.startsWith("AI_TIME_")).id;
   reply = await handleIncomingMessage({ phoneE164: phone, text: "Time", replyId: timeId, messageId: "upload-time" });
-  assert.match(reply.body, /PDF, JPEG, or PNG/i);
+  assert.match(reply.body, /full name/i);
+  reply = await handleIncomingMessage({ phoneE164: phone, text: "Report Test Patient", messageId: "upload-name" });
+  const concernId = reply.sections[0].rows.find((row) => row.id.startsWith("AI_CONCERN_")).id;
+  reply = await handleIncomingMessage({ phoneE164: phone, text: "Shoulder pain", replyId: concernId, messageId: "upload-reason" });
+  assert.match(reply.body, /X-rays|reports/i);
   assert.deepEqual(reply.buttons.map((button) => button.id), ["AI_REPORTS_YES", "AI_REPORTS_NO"]);
 });
 
 test("invalid and expired WhatsApp conversation selections fail safely", async () => {
   const phone = "+923001234567";
   let reply = await handleIncomingMessage({ phoneE164: phone, text: "Confirm", replyId: "AI_BOOK_CONFIRM", messageId: "invalid-confirm" });
-  assert.match(reply.body, /tell me|appointment|reception/i);
+  assert.match(reply.body, /didn.t quite understand|menu/i);
   assert.equal(await Appointment.countDocuments(), 0);
 
+  // A past date is rejected and the patient is offered only real, future dates.
   reply = await handleIncomingMessage({ phoneE164: phone, text: "I need an appointment on 2020-01-01", messageId: "expired-date" });
-  assert.match(reply.body, /full name/i);
+  assert.equal(reply.kind, "list");
+  assert.ok(reply.sections[0].rows.length > 0);
+  assert.ok(reply.sections[0].rows.every((row) => row.id.startsWith("AI_DATE_")));
   assert.equal(await Appointment.countDocuments(), 0);
 });
 
@@ -222,7 +298,7 @@ test("full WhatsApp booking uses the shared engine and a duplicated final webhoo
   assert.equal(appointment.source, "whatsapp");
   assert.equal(appointment.patientProvidedVisitSummary.patientName, "WhatsApp Test Patient");
   assert.ok(appointment.patientProvidedVisitSummary.approvedAt);
-  assert.match(appointment.patientProvidedVisitSummary.disclaimer, /not an AI diagnosis/i);
+  assert.match(appointment.patientProvidedVisitSummary.disclaimer, /Patient-provided information only/i);
   assert.equal((await PatientConsent.findById(appointment.consent)).consentGiven, true);
   await waitFor(() => WhatsAppMessage.exists({ templateName: "dr_sohaib_appointment_confirmation_v1", status: "queued" }));
 
@@ -255,9 +331,10 @@ test("WhatsApp cancellation and rescheduling use secure phone ownership and conf
   }, { source: "whatsapp", idempotencyKey: "second-booking", skipNotification: true });
   const targetDate = dates.find((item) => item.date !== appointment.date).date;
   reply = await handleIncomingMessage({ phoneE164: phone, text: `Reschedule ${appointment.appointmentId} to ${targetDate}`, messageId: "reschedule-1" });
-  assert.ok(reply.buttons, JSON.stringify(reply));
-  assert.ok(reply.buttons.some((button) => button.id.startsWith("AI_RESCHEDULE_TIME_")));
-  const newTimeId = reply.buttons.find((button) => button.id.startsWith("AI_RESCHEDULE_TIME_")).id;
+  // Reschedule times are now an interactive list of up to 10 real slots.
+  assert.equal(reply.kind, "list", JSON.stringify(reply));
+  assert.ok(reply.sections[0].rows.some((row) => row.id.startsWith("AI_RESCHEDULE_TIME_")));
+  const newTimeId = reply.sections[0].rows.find((row) => row.id.startsWith("AI_RESCHEDULE_TIME_")).id;
   reply = await handleIncomingMessage({ phoneE164: phone, text: "New time", replyId: newTimeId, messageId: "reschedule-2" });
   assert.equal(reply.buttons[0].id, "AI_RESCHEDULE_CONFIRM");
   reply = await handleIncomingMessage({ phoneE164: phone, text: "Confirm", replyId: "AI_RESCHEDULE_CONFIRM", messageId: "reschedule-3" });

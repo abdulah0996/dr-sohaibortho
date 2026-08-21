@@ -15,8 +15,16 @@ const {
   mainMenu,
   doctorProfileCard,
   clinicInfoCard,
-  servicesCard
+  servicesCard,
+  dateList,
+  timeList,
+  concernList,
+  displayTime,
+  displayDate,
+  CONCERN_OPTIONS
 } = require("./messages");
+
+const LIST_MAX_ROWS = 10;
 
 const reply = {
   text: (body) => ({ kind: "text", body }),
@@ -131,54 +139,67 @@ function createConversationOrchestrator(deps = {}) {
     );
   }
 
+  // Presents the next single decision. Availability always comes from the
+  // existing appointment engine; this function never computes slots itself.
+  async function askForDate(session, next, lang, prefixBody = "") {
+    const dates = await d.tools.get_available_dates({ locationId: next.locationId });
+    if (!dates.length) return reply.text(tr(lang, "noDatesAvailable"));
+    const context = { ...next, availableDates: dates.map((entry) => entry.date) };
+    delete context.date;
+    delete context.preferredDate;
+    await saveSession(session, "BOOKING_DATE", context);
+    const prompt = dateList(lang, dates);
+    return prefixBody ? { ...prompt, body: `${prefixBody}\n\n${prompt.body}` } : prompt;
+  }
+
+  async function askForTime(session, next, slots, lang, messageId) {
+    await saveSession(session, "BOOKING_TIME", {
+      ...next,
+      availableTimes: slots.slice(0, LIST_MAX_ROWS).map((slot) => slot.time),
+      messageId
+    });
+    return timeList(lang, next.date, slots);
+  }
+
   async function continueBooking(session, phone, context, messageId, lang = "en") {
     let next = { ...context, phone, language: lang };
 
-    // Step 1: Patient Full Name
-    if (!next.fullName) {
-      await saveSession(session, "BOOKING_NAME", next);
-      return reply.text(tr(lang, "bookStep1Name"));
-    }
-
-    // Step 2: Patient Age / Reason
-    if (!next.reason) {
-      await saveSession(session, "BOOKING_CONCERN", next);
-      return reply.text(tr(lang, "bookStep3Concern"));
-    }
-
-    // Step 3: Choose Clinic
+    // Clinic first (silently auto-selected when only one clinic is bookable).
     const clinic = await chooseClinic(session, next, lang);
     if (!clinic) return handoff(session, phone, "No bookable clinic available", lang);
     if (clinic.body) return clinic;
     next = clinic;
 
-    // Step 4: Choose Date
+    // Step 1: Choose Date — tapped from real engine availability.
     next.date = resolveDate(next.preferredDate || next.date);
-    if (!next.date) {
-      await saveSession(session, "BOOKING_DATE", next);
-      const availableDates = await d.tools.get_available_slots ? [] : [];
-      return reply.text(tr(lang, "bookStep5Date"));
-    }
+    if (!next.date) return askForDate(session, next, lang);
 
-    // Step 5: Choose Time Slot (20-min slots)
+    // Step 2: Choose Time — real 20-minute slots for that date.
     const slots = await d.tools.get_available_slots({ locationId: next.locationId, date: next.date });
     if (!slots.length) {
-      delete next.date;
-      delete next.preferredDate;
-      await saveSession(session, "BOOKING_DATE", next);
-      return reply.text(tr(lang, "noTimesAvailable", { date: context.preferredDate || context.date || "" }) + "\n\n" + tr(lang, "bookStep5Date"));
+      return askForDate(session, next, lang, tr(lang, "noTimesAvailable", { date: displayDate(next.date, lang) }));
     }
 
     const wantedTime = normalizeTime(next.preferredTime || next.time);
-    if (wantedTime && slots.some((slot) => slot.time === wantedTime)) {
-      return askReports(session, { ...next, time: wantedTime }, lang);
+    if (!wantedTime || !slots.some((slot) => slot.time === wantedTime)) {
+      return askForTime(session, next, slots, lang, messageId);
+    }
+    next.time = wantedTime;
+
+    // Step 3: Patient name (the only unavoidable free-text field).
+    if (!next.fullName) {
+      await saveSession(session, "BOOKING_NAME", next);
+      return reply.text(tr(lang, "bookStep1Name"));
     }
 
-    await saveSession(session, "BOOKING_TIME", { ...next, availableTimes: slots.slice(0, 3).map((slot) => slot.time), messageId });
-    return reply.buttons(
-      tr(lang, "bookStep6Time", { date: next.date }),
-      slots.slice(0, 3).map((slot) => ({ id: `AI_TIME_${slot.time}`, title: `🕒 ${slot.time}` }))
-    );
+    // Step 4: Reason for visit — tap a concern, or describe it.
+    if (!next.reason) {
+      await saveSession(session, "BOOKING_CONCERN", next);
+      return concernList(lang);
+    }
+
+    // Step 5: Reports, then review + consent.
+    return askReports(session, next, lang);
   }
 
   async function askReports(session, context, lang = "en") {
@@ -311,9 +332,8 @@ function createConversationOrchestrator(deps = {}) {
 
     // Booking Flow State Machine
     if (upper === "MENU_BOOK" || upper === "START_BOOKING") {
-      const freshContext = { phone, language: lang };
-      await saveSession(session, "BOOKING_NAME", freshContext);
-      return reply.text(tr(lang, "bookStep1Name"));
+      // Tapping "Book Appointment" opens the date picker, not a typing prompt.
+      return continueBooking(session, phone, { phone, language: lang }, messageId, lang);
     }
 
     if (upper.startsWith("AI_CLINIC_") && session.state === "BOOKING_CLINIC") {
@@ -323,14 +343,45 @@ function createConversationOrchestrator(deps = {}) {
       return continueBooking(session, phone, { ...session.context, locationId: String(selected._id || selected.code), locationName: `${selected.clinicName}, ${selected.city}` }, messageId, lang);
     }
 
-    if (upper.startsWith("AI_TIME_") && session.state === "BOOKING_TIME") {
-      const time = action.slice("AI_TIME_".length).replace(/^🕒\s*/, "").trim();
-      if (!(session.context.availableTimes || []).includes(time)) {
-        return reply.text(tr(lang, "bookStep6Time", { date: session.context.date }));
+    if (upper.startsWith("AI_DATE_") && session.state === "BOOKING_DATE") {
+      const chosen = action.slice("AI_DATE_".length).trim();
+      if (!(session.context.availableDates || []).includes(chosen)) {
+        return askForDate(session, { ...session.context, phone, language: lang }, lang);
       }
-      const context = { ...session.context, time };
+      const context = { ...session.context, date: chosen, preferredDate: chosen };
+      delete context.availableDates;
+      return continueBooking(session, phone, context, messageId, lang);
+    }
+
+    if (upper.startsWith("AI_TIME_") && session.state === "BOOKING_TIME") {
+      const time = normalizeTime(action.slice("AI_TIME_".length).replace(/^🕒\s*/, "").trim());
+      if (!time || !(session.context.availableTimes || []).includes(time)) {
+        const slots = await d.tools.get_available_slots({ locationId: session.context.locationId, date: session.context.date });
+        if (!slots.length) {
+          return askForDate(session, { ...session.context, phone, language: lang }, lang,
+            tr(lang, "noTimesAvailable", { date: displayDate(session.context.date, lang) }));
+        }
+        return askForTime(session, { ...session.context, phone, language: lang }, slots, lang, messageId);
+      }
+      const context = { ...session.context, time, preferredTime: time };
       delete context.availableTimes;
-      return askReports(session, context, lang);
+      return continueBooking(session, phone, context, messageId, lang);
+    }
+
+    if (upper.startsWith("AI_CONCERN_") && ["BOOKING_CONCERN", "BOOKING_CHANGE"].includes(session.state)) {
+      const key = action.slice("AI_CONCERN_".length).trim().toUpperCase();
+      if (key === "OTHER") {
+        await saveSession(session, "BOOKING_CONCERN", { ...session.context, awaitingConcernText: true });
+        return reply.text(tr(lang, "concernOtherPrompt"));
+      }
+      const option = CONCERN_OPTIONS.find((name) => name.toUpperCase() === key);
+      if (!option) return concernList(lang);
+      const context = {
+        ...session.context,
+        reason: tr(lang, `concern${option}`).replace(/^[^\p{L}]+/u, "").trim()
+      };
+      delete context.awaitingConcernText;
+      return continueBooking(session, phone, context, messageId, lang);
     }
 
     if (["AI_REPORTS_YES", "AI_REPORTS_NO"].includes(upper) && session.state === "BOOKING_REPORTS") {
@@ -350,8 +401,11 @@ function createConversationOrchestrator(deps = {}) {
     }
 
     if (upper === "AI_SUMMARY_CHANGE" && session.state === "BOOKING_SUMMARY") {
-      await saveSession(session, "BOOKING_CHANGE", session.context);
-      return reply.text(tr(lang, "bookStep3Concern"));
+      // Changing details restarts at the date picker so the patient re-picks a real slot.
+      const context = { ...session.context, phone, language: lang };
+      delete context.time;
+      delete context.preferredTime;
+      return askForDate(session, context, lang);
     }
 
     if (upper === "AI_SUMMARY_OK" && session.state === "BOOKING_SUMMARY") {
@@ -376,7 +430,12 @@ function createConversationOrchestrator(deps = {}) {
     if (upper === "AI_CONSENT_YES" && session.state === "BOOKING_CONSENT") {
       await saveSession(session, "BOOKING_CONFIRM", { ...session.context, consentGiven: true });
       return reply.buttons(
-        `Please confirm ${session.context.fullName} on ${session.context.date} at ${session.context.time}, ${session.context.locationName || "Iqbal Hospital, Bahawalpur"}.`,
+        tr(lang, "confirmCardBody", {
+          name: session.context.fullName,
+          clinic: session.context.locationName || "Iqbal Hospital, Noor Mahal Road, Bahawalpur",
+          date: displayDate(session.context.date, lang),
+          time: displayTime(session.context.time)
+        }),
         [
           { id: "AI_BOOK_CONFIRM", title: tr(lang, "btnSummaryOk").slice(0, 20) },
           { id: "AI_BOOK_TIME", title: tr(lang, "btnSummaryChange").slice(0, 20) }
@@ -537,12 +596,10 @@ function createConversationOrchestrator(deps = {}) {
       }
 
       if (!wanted || !slots.some((slot) => slot.time === wanted)) {
-        await saveSession(session, "RESCHEDULE_TIME", { ...context, availableTimes: slots.slice(0, 3).map((slot) => slot.time) });
-        if (!slots.length) return reply.text(tr(lang, "noTimesAvailable", { date: context.date }));
-        return reply.buttons(
-          tr(lang, "rescheduleTimePrompt", { date: context.date }),
-          slots.slice(0, 3).map((slot) => ({ id: `AI_RESCHEDULE_TIME_${slot.time}`, title: `🕒 ${slot.time}` }))
-        );
+        if (!slots.length) return reply.text(tr(lang, "noTimesAvailable", { date: displayDate(context.date, lang) }));
+        await saveSession(session, "RESCHEDULE_TIME", { ...context, availableTimes: slots.slice(0, LIST_MAX_ROWS).map((slot) => slot.time) });
+        const prompt = timeList(lang, context.date, slots, "AI_RESCHEDULE_TIME_");
+        return { ...prompt, body: tr(lang, "rescheduleTimePrompt", { date: displayDate(context.date, lang) }) };
       }
 
       context.time = wanted;
@@ -558,7 +615,12 @@ function createConversationOrchestrator(deps = {}) {
 
     // Cancel Flow
     if (upper === "MENU_CANCEL" || facts.intent === "cancel" || session.state.startsWith("CANCEL_")) {
-      const appointmentId = facts.appointmentId || (session.state === "CANCEL_ID" ? input.toUpperCase() : null);
+      // The id captured when entering CANCEL_CONFIRM must survive the confirm tap,
+      // otherwise the guard below loops the patient back to the id prompt.
+      // Ownership is still re-verified by lookup_verified_appointment below.
+      const appointmentId = facts.appointmentId
+        || session.context?.appointmentId
+        || (session.state === "CANCEL_ID" ? input.toUpperCase() : null);
       if (!appointmentId) {
         await saveSession(session, "CANCEL_ID", { language: lang });
         return reply.text(tr(lang, "cancelPrompt"));

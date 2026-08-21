@@ -13,7 +13,7 @@ process.env.WHATSAPP_VERIFY_TOKEN = "integration-verify-token";
 const { createApp } = require("../src/app");
 const { createStaffUser } = require("../src/services/authService");
 const { ensureInitialLocations } = require("../src/services/locationService");
-const { AuditLog, MessageDeliveryStatus } = require("../src/models");
+const { Appointment, AuditLog, MessageDeliveryStatus } = require("../src/models");
 const { config } = require("../src/config/env");
 const { setMetaFetchForTests } = require("../src/services/whatsappService");
 const { setMedicalFileStorageForTests } = require("../src/services/medicalFileStorage");
@@ -338,19 +338,44 @@ test("authorized clinical, reception and operational mutations follow the matrix
   const staffMessage = await request(`/api/conversations/${conversationId}/messages`, { method: "POST", token: tokens.clinic_staff, body: { body: "Clinic response" } });
   assert.equal(staffMessage.response.status, 201);
 
-  const bookingStarted = await request("/api/whatsapp/simulate-message", { method: "POST", token: tokens.receptionist, body: { phone: "03005556666", message: "I need an appointment Monday", language: "en" } });
-  assert.match(bookingStarted.data.reply.body, /full name/i);
-  await request("/api/whatsapp/simulate-message", { method: "POST", token: tokens.receptionist, body: { phone: "03005556666", message: "Consent Test Patient", language: "en" } });
-  const timeQuestion = await request("/api/whatsapp/simulate-message", { method: "POST", token: tokens.receptionist, body: { phone: "03005556666", message: "Knee pain follow-up", language: "en" } });
-  const timeId = timeQuestion.data.reply.buttons.find((button) => button.id.startsWith("AI_TIME_")).id;
-  await request("/api/whatsapp/simulate-message", { method: "POST", token: tokens.receptionist, body: { phone: "03005556666", message: timeId, language: "en" } });
-  await request("/api/whatsapp/simulate-message", { method: "POST", token: tokens.receptionist, body: { phone: "03005556666", message: "AI_REPORTS_NO", language: "en" } });
-  const consentQuestion = await request("/api/whatsapp/simulate-message", { method: "POST", token: tokens.receptionist, body: { phone: "03005556666", message: "AI_SUMMARY_OK", language: "en" } });
+  const bookingPhone = "03005556666";
+  const say = (message) => request("/api/whatsapp/simulate-message", {
+    method: "POST", token: tokens.receptionist, body: { phone: bookingPhone, message, language: "en" }
+  });
+  const rowId = (reply, prefix) => reply.sections
+    .flatMap((section) => section.rows)
+    .find((row) => row.id.startsWith(prefix)).id;
+
+  // Journey: BOOK -> DATE -> TIME -> NAME -> CONCERN -> REPORTS -> SUMMARY -> CONSENT -> CONFIRM.
+  // "Monday" resolves the date, so the patient opens directly on the slot picker.
+  const bookingStarted = await say("I need an appointment Monday");
+  assert.ok(Array.isArray(bookingStarted.data.reply.sections), "times must be offered as an interactive list");
+  const timeId = rowId(bookingStarted.data.reply, "AI_TIME_");
+
+  const nameQuestion = await say(timeId);
+  assert.match(nameQuestion.data.reply.body, /full name/i);
+  const concernQuestion = await say("Consent Test Patient");
+  await say(rowId(concernQuestion.data.reply, "AI_CONCERN_"));
+  await say("AI_REPORTS_NO");
+  const consentQuestion = await say("AI_SUMMARY_OK");
   assert.match(consentQuestion.data.reply.body, /consent/i);
-  const beforeConsent = await request("/api/whatsapp/simulate-message", { method: "POST", token: tokens.receptionist, body: { phone: "03005556666", message: "Patient Name", language: "en" } });
-  assert.match(beforeConsent.data.reply.body, /consent is required/i);
-  const consented = await request("/api/whatsapp/simulate-message", { method: "POST", token: tokens.receptionist, body: { phone: "03005556666", message: "AI_CONSENT_YES", language: "en" } });
+
+  // Security property: consent cannot be bypassed. Free text while consent is
+  // outstanding must never reach the confirmation step or create an appointment.
+  const beforeConsent = await say("Patient Name");
+  assert.doesNotMatch(beforeConsent.data.reply.body, /final check/i);
+  assert.equal((beforeConsent.data.reply.buttons || []).some((button) => button.id === "AI_BOOK_CONFIRM"), false);
+  assert.equal(await Appointment.countDocuments({ phoneE164: { $in: ["+923005556666", bookingPhone] } }), 0);
+  const forcedConfirm = await say("AI_BOOK_CONFIRM");
+  assert.doesNotMatch(forcedConfirm.data.reply.body, /token|appointment id/i);
+  assert.equal(await Appointment.countDocuments({ phoneE164: { $in: ["+923005556666", bookingPhone] } }), 0);
+
+  // Only an explicit consent tap, from the consent state, reaches confirmation.
+  await say("AI_REPORTS_NO");
+  await say("AI_SUMMARY_OK");
+  const consented = await say("AI_CONSENT_YES");
   assert.match(consented.data.reply.body, /confirm/i);
+  assert.ok((consented.data.reply.buttons || []).some((button) => button.id === "AI_BOOK_CONFIRM"));
 });
 
 test("security audit records preserve actor role, request ID, IP and user agent without content", async () => {
