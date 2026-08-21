@@ -107,7 +107,7 @@ test("arrival update uses only the administrator-entered clinic delay", async ()
   const results = await processDueReminders({ limit: 1 });
   assert.equal(results[0].status, "queued");
   const parameters = metaPayloads[0].template.components[0].parameters.map((parameter) => parameter.text);
-  assert.ok(parameters.includes("Dr. Sohaib is approximately 20 minutes behind schedule."));
+  assert.ok(parameters.includes("Dr. Shoaib is approximately 20 minutes behind schedule."));
   assert.ok(parameters.some((value) => /\d{2}:\d{2} [AP]M/.test(value)));
 });
 
@@ -164,7 +164,8 @@ test("rescheduling cancels old jobs and creates one new revision", async () => {
     appointmentId: appointment.appointmentId,
     phone: appointment.phoneE164,
     date: futureOpenDate(3),
-    time: "16:45"
+    // Slots run on a 20-minute grid from 16:30, so 16:50 is the next real slot.
+    time: "16:50"
   }, { source: "website", skipNotification: true });
   assert.equal(moved.rescheduleCount, 1);
   assert.equal(await ReminderJob.countDocuments({ appointment: appointment._id, scheduleRevision: 0, status: "cancelled" }), 2);
