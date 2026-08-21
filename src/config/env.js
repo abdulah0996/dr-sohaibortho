@@ -140,7 +140,7 @@ const config = {
   emailAppointmentAlert: {
     enabled: emailEnabled,
     to: ownerEmail,
-    fromName: read("EMAIL_FROM_NAME", "Dr. Sohaib Clinic").trim(),
+    fromName: read("EMAIL_FROM_NAME", "Dr. Shoaib Clinic").trim(),
     fromAddress: emailFrom,
     provider: read("EMAIL_PROVIDER", "smtp").trim().toLowerCase(),
     smtp: {

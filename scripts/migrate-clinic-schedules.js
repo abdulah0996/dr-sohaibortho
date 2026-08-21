@@ -37,10 +37,10 @@ async function migrateClinicSchedules() {
   for (const location of locations) {
     const proposedTimezone = location.timezone || legacySettings?.timezone || "Asia/Karachi";
     const timezone = isValidTimezone(proposedTimezone) ? proposedTimezone : "Asia/Karachi";
-    let slotDurationMinutes = Number(location.slotDurationMinutes || legacySettings?.slotDurationMinutes || 15);
+    let slotDurationMinutes = Number(location.slotDurationMinutes || legacySettings?.slotDurationMinutes || 20);
     let weeklyHours = isValidWeeklyHours(location.weeklyHours, slotDurationMinutes) ? location.weeklyHours : defaultWeeklyHours();
     if (!isValidWeeklyHours(weeklyHours, slotDurationMinutes)) {
-      slotDurationMinutes = 15;
+      slotDurationMinutes = 20;
       weeklyHours = defaultWeeklyHours();
     }
     let status = location.status;

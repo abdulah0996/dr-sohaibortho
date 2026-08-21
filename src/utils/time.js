@@ -6,13 +6,13 @@ const TIME_RE = /^\d{2}:\d{2}$/;
 
 function defaultWeeklyHours() {
   return [
-    { day: 1, isOpen: true, start: "16:30", end: "20:30" },
-    { day: 2, isOpen: true, start: "16:30", end: "20:30" },
-    { day: 3, isOpen: true, start: "16:30", end: "20:30" },
-    { day: 4, isOpen: true, start: "16:30", end: "20:30" },
-    { day: 5, isOpen: false, start: "16:30", end: "20:30" },
-    { day: 6, isOpen: false, start: "16:30", end: "20:30" },
-    { day: 7, isOpen: false, start: "16:30", end: "20:30" }
+    { day: 1, isOpen: true, start: "16:30", end: "20:30" }, // Mon
+    { day: 2, isOpen: true, start: "16:30", end: "20:30" }, // Tue
+    { day: 3, isOpen: true, start: "16:30", end: "20:30" }, // Wed
+    { day: 4, isOpen: true, start: "16:30", end: "20:30" }, // Thu
+    { day: 5, isOpen: true, start: "20:00", end: "21:00" }, // Fri
+    { day: 6, isOpen: false, start: "16:30", end: "20:30" }, // Sat
+    { day: 7, isOpen: false, start: "16:30", end: "20:30" }  // Sun
   ];
 }
 
@@ -148,7 +148,7 @@ function validateSlotAgainstSchedule({ settings, date, time, now = nowInClinicZo
   if (selected < start || selected >= end) {
     return { ok: false, reason: "The selected time is outside this clinic's opening hours." };
   }
-  const duration = Number(settings.slotDurationMinutes || 15);
+  const duration = Number(settings.slotDurationMinutes || 20);
   if (!Number.isFinite(duration) || duration <= 0 || (selected - start) % duration !== 0) {
     return { ok: false, reason: "The selected time is not a valid appointment slot." };
   }
@@ -160,7 +160,7 @@ function generateScheduleSlots(settings, date) {
   const daySchedule = getDaySchedule(settings, date);
   if (!daySchedule || !daySchedule.isOpen) return [];
 
-  const duration = Number(settings.slotDurationMinutes || 30);
+  const duration = Number(settings.slotDurationMinutes || 20);
   const start = minutesFromTime(daySchedule.start);
   const end = minutesFromTime(daySchedule.end);
   const slots = [];
@@ -185,7 +185,7 @@ function activePatientDateKey(phoneE164, locationId, date) {
 function tokenNumberForTime(locationSettings, date, time) {
   const schedule = getDaySchedule(locationSettings, date);
   if (!schedule || !schedule.isOpen) return "";
-  const duration = Number(locationSettings.slotDurationMinutes || 15);
+  const duration = Number(locationSettings.slotDurationMinutes || 20);
   const offset = minutesFromTime(time) - minutesFromTime(schedule.start);
   if (offset < 0 || offset % duration !== 0) return "";
   return String((offset / duration) + 1).padStart(3, "0");

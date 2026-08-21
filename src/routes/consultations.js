@@ -74,7 +74,7 @@ const handleConsultationSubmission = asyncHandler(async (req, res) => {
       preferredTime: consultation.preferredTime,
       status: consultation.status
     },
-    message: "Submit your consultation request for Dr. Sohaib. Clinic staff will review it and contact you for confirmation."
+    message: "Submit your consultation request for Dr. Shoaib. Clinic staff will review it and contact you for confirmation."
   });
 });
 

@@ -96,7 +96,7 @@ test.beforeEach(async () => {
     Appointment.deleteMany({}), Patient.deleteMany({}), PatientConsent.deleteMany({}), BookingRequest.deleteMany({}), Counter.deleteMany({}), AuditLog.deleteMany({})
   ]);
   await ClinicLocation.updateOne({ _id: bwp._id }, { $set: {
-    status: "Active", timezone: "Asia/Karachi", weeklyHours: defaultWeeklyHours(), slotDurationMinutes: 15,
+    status: "Active", timezone: "Asia/Karachi", weeklyHours: defaultWeeklyHours(), slotDurationMinutes: 20,
     sameDayBookingCutoffMinutes: 0, blockedDates: [], blockedSlots: []
   } });
 });
@@ -146,23 +146,23 @@ test("blocked dates, closed weekdays, Coming Soon and inactive clinics reject bo
   for (const input of [booking({ date: monday }), booking({ date: friday, phone: "03001234002" }), booking({ date: monday, phone: "03001234003", locationId: "BWN" })]) {
     assert.ok([400, 409].includes((await request("/api/appointments", { method: "POST", body: input })).response.status));
   }
-  const inactive = await ClinicLocation.create({ clinicName: "Inactive Clinic", city: "Test", code: "INA", fullAddress: "Test", status: "Inactive", timezone: "Asia/Karachi", weeklyHours: defaultWeeklyHours(), slotDurationMinutes: 15 });
+  const inactive = await ClinicLocation.create({ clinicName: "Inactive Clinic", city: "Test", code: "INA", fullAddress: "Test", status: "Inactive", timezone: "Asia/Karachi", weeklyHours: defaultWeeklyHours(), slotDurationMinutes: 20 });
   assert.equal((await request("/api/appointments", { method: "POST", body: booking({ date: futureWeekday(1, 3), phone: "03001234004", locationId: inactive.code }) })).response.status, 400);
 });
 
 test("website, WhatsApp, staff and rescheduling use the same blocked-slot decision", async () => {
   const date = futureWeekday(2);
-  await request("/api/availability/block-slot", { method: "POST", token: tokens.receptionist, body: { locationId: "BWP", date, time: "17:00", reason: "Unavailable" } });
-  assert.equal((await request("/api/appointments", { method: "POST", body: booking({ date, time: "17:00" }) })).response.status, 409);
+  await request("/api/availability/block-slot", { method: "POST", token: tokens.receptionist, body: { locationId: "BWP", date, time: "16:50", reason: "Unavailable" } });
+  assert.equal((await request("/api/appointments", { method: "POST", body: booking({ date, time: "16:50" }) })).response.status, 409);
   for (const [source, phone] of [["whatsapp", "03001234005"], ["staff", "03001234006"]]) {
-    await assert.rejects(createAppointment(booking({ date, time: "17:00", phone }), { source }), (error) => error.statusCode === 409);
+    await assert.rejects(createAppointment(booking({ date, time: "16:50", phone }), { source }), (error) => error.statusCode === 409);
   }
   const original = await createAppointment(booking({ date: futureWeekday(1, 3), time: "16:30", phone: "03001234007" }), { source: "website" });
-  await assert.rejects(rescheduleAppointment({ appointmentId: original.appointmentId, phone: original.phoneE164, locationId: "BWP", date, time: "17:00" }), (error) => error.statusCode === 409);
+  await assert.rejects(rescheduleAppointment({ appointmentId: original.appointmentId, phone: original.phoneE164, locationId: "BWP", date, time: "16:50" }), (error) => error.statusCode === 409);
 });
 
 test("public users and unauthorized staff cannot modify schedules", async () => {
-  const body = { locationId: "BWP", date: futureWeekday(1), time: "18:00", reason: "Unauthorized" };
+  const body = { locationId: "BWP", date: futureWeekday(1), time: "17:10", reason: "Unauthorized" };
   assert.equal((await request("/api/availability/block-slot", { method: "POST", body })).response.status, 401);
   assert.equal((await request("/api/availability/block-slot", { method: "POST", token: tokens.doctor, body })).response.status, 403);
   assert.equal((await request("/api/availability/block-slot", { method: "POST", token: tokens.staff, body })).response.status, 403);
@@ -207,9 +207,9 @@ test("blocking an occupied slot requires explicit confirmation and never cancels
 test("dashboard totals come from the selected clinic schedule and date", async () => {
   const date = futureWeekday(1);
   await createAppointment(booking({ date, time: "16:30" }), { source: "website" });
-  const cancelled = await createAppointment(booking({ date, time: "16:45", phone: "03001234008" }), { source: "website" });
+  const cancelled = await createAppointment(booking({ date, time: "16:50", phone: "03001234008" }), { source: "website" });
   await cancelAppointment({ appointmentId: cancelled.appointmentId, phone: cancelled.phoneE164 });
-  await request("/api/availability/block-slot", { method: "POST", token: tokens.receptionist, body: { locationId: "BWP", date, time: "17:00", reason: "Dashboard test" } });
+  await request("/api/availability/block-slot", { method: "POST", token: tokens.receptionist, body: { locationId: "BWP", date, time: "17:10", reason: "Dashboard test" } });
   const dashboard = await request(`/api/dashboard/summary?locationId=BWP&date=${date}`, { token: tokens.receptionist });
   assert.equal(dashboard.response.status, 200);
   assert.deepEqual({
@@ -218,13 +218,13 @@ test("dashboard totals come from the selected clinic schedule and date", async (
     availableSlots: dashboard.data.summary.availableSlots,
     blockedSlots: dashboard.data.summary.blockedSlots,
     cancelledAppointments: dashboard.data.summary.cancelledAppointments
-  }, { totalPossibleSlots: 16, bookedSlots: 1, availableSlots: 14, blockedSlots: 1, cancelledAppointments: 1 });
+  }, { totalPossibleSlots: 12, bookedSlots: 1, availableSlots: 10, blockedSlots: 1, cancelledAppointments: 1 });
 });
 
 test("schedule migration consolidates legacy settings and preserves Coming Soon clinics", async () => {
   await ClinicLocation.collection.updateOne({ code: "BWP" }, { $unset: { weeklyHours: "", sameDayBookingCutoffMinutes: "" }, $set: { isActive: true, bookingEnabled: true } });
   await ClinicLocation.collection.updateOne({ code: "BWN" }, { $set: { status: "Active", isActive: false, bookingEnabled: false } });
-  await ClinicSettings.collection.updateOne({ key: "default" }, { $set: { timezone: "Asia/Karachi", slotDurationMinutes: 15 } }, { upsert: true });
+  await ClinicSettings.collection.updateOne({ key: "default" }, { $set: { timezone: "Asia/Karachi", slotDurationMinutes: 20 } }, { upsert: true });
   const report = await migrateClinicSchedules();
   assert.equal(report.bwpSchedule, "verified");
   assert.equal(report.comingSoonClinics, 2);

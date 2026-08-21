@@ -104,12 +104,15 @@ const blockedSlotSchema = new Schema({
 }, { _id: false });
 
 function defaultLocationWeeklyHours() {
-  return [1, 2, 3, 4, 5, 6, 7].map((day) => ({
-    day,
-    isOpen: day <= 4,
-    start: "16:30",
-    end: "20:30"
-  }));
+  return [
+    { day: 1, isOpen: true, start: "16:30", end: "20:30" }, // Mon
+    { day: 2, isOpen: true, start: "16:30", end: "20:30" }, // Tue
+    { day: 3, isOpen: true, start: "16:30", end: "20:30" }, // Wed
+    { day: 4, isOpen: true, start: "16:30", end: "20:30" }, // Thu
+    { day: 5, isOpen: true, start: "20:00", end: "21:00" }, // Fri
+    { day: 6, isOpen: false, start: "16:30", end: "20:30" }, // Sat
+    { day: 7, isOpen: false, start: "16:30", end: "20:30" }  // Sun
+  ];
 }
 
 // Authoritative clinic schedule and availability schema.
@@ -132,7 +135,7 @@ const clinicLocationSchema = new Schema({
       message: "Weekly hours must contain seven unique days with valid opening and closing times"
     }
   },
-  slotDurationMinutes: { type: Number, default: 15, min: 5, max: 240 },
+  slotDurationMinutes: { type: Number, default: 20, min: 5, max: 240 },
   sameDayBookingCutoffMinutes: { type: Number, default: 0, min: 0, max: 1440 },
   appointmentFee: { type: Number, min: 0, default: 2000 },
   blockedDates: {

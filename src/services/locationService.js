@@ -7,7 +7,7 @@ const initialLocations = [
   {
     clinicName: "Iqbal Hospital", city: "Bahawalpur", code: "BWP",
     fullAddress: "Noor Mahal Road, Bahawalpur", status: "Active",
-    timezone: "Asia/Karachi", slotDurationMinutes: 15, sameDayBookingCutoffMinutes: 0, weeklyHours: defaultWeeklyHours(), displayOrder: 1
+    timezone: "Asia/Karachi", slotDurationMinutes: 20, sameDayBookingCutoffMinutes: 0, weeklyHours: defaultWeeklyHours(), displayOrder: 1
   },
   { clinicName: "Coming Soon", city: "Bahawalnagar", code: "BWN", fullAddress: "To be confirmed", status: "Coming Soon", timezone: "Asia/Karachi", weeklyHours: defaultWeeklyHours(), displayOrder: 2 },
   { clinicName: "Coming Soon", city: "Rahim Yar Khan", code: "RYK", fullAddress: "To be confirmed", status: "Coming Soon", timezone: "Asia/Karachi", weeklyHours: defaultWeeklyHours(), displayOrder: 3 }

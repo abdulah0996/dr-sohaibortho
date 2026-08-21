@@ -165,7 +165,7 @@ router.post("/simulate-message", requireAuth, requirePermission("conversations.m
     conversation: session._id,
     direction: "outgoing",
     senderType: "ai",
-    body: reply?.body || reply?.text || "Thank you. Dr. Sohaib's assistant is processing your request.",
+    body: reply?.body || reply?.text || "Thank you. Dr. Shoaib's assistant is processing your request.",
     status: "queued"
   });
 

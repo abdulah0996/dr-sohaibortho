@@ -18,7 +18,7 @@ async function sendAppointmentConfirmation(appointment) {
       appointment.tokenNumber,
       appointment.date,
       appointment.time,
-      appointment.locationSnapshot?.clinicName || "Dr. Sohaib Clinic",
+      appointment.locationSnapshot?.clinicName || "Dr. Shoaib Clinic",
       appointment.locationSnapshot?.address || appointment.locationSnapshot?.city || "Clinic",
       appointment.locationSnapshot?.contactNumber || config.clinicContactNumber || "Clinic contact"
     ],
@@ -38,7 +38,7 @@ async function sendRescheduleConfirmation(appointment) {
       appointment.appointmentId,
       appointment.date,
       appointment.time,
-      appointment.locationSnapshot?.clinicName || "Dr. Sohaib Clinic",
+      appointment.locationSnapshot?.clinicName || "Dr. Shoaib Clinic",
       appointment.tokenNumber,
       appointment.locationSnapshot?.contactNumber || config.clinicContactNumber || "Clinic contact"
     ],
@@ -87,7 +87,7 @@ async function sendArrivalUpdate(appointment, { arrivalTime, delayMinutes = 0 } 
   const name = config.whatsapp.templates.arrivalUpdate;
   if (templateUnavailable(name)) return { status: "skipped", failureCode: "TEMPLATE_NOT_CONFIGURED" };
   const delayMessage = delayMinutes > 0
-    ? `Dr. Sohaib is approximately ${delayMinutes} minutes behind schedule.`
+    ? `Dr. Shoaib is approximately ${delayMinutes} minutes behind schedule.`
     : "No clinic delay has been reported.";
   return sendTemplate(
     appointment.phoneE164,
@@ -99,7 +99,7 @@ async function sendArrivalUpdate(appointment, { arrivalTime, delayMinutes = 0 } 
       appointment.time,
       arrivalTime,
       delayMessage,
-      appointment.locationSnapshot?.clinicName || "Dr. Sohaib Clinic",
+      appointment.locationSnapshot?.clinicName || "Dr. Shoaib Clinic",
       appointment.locationSnapshot?.address || appointment.locationSnapshot?.city || "Clinic"
     ],
     { expectedParameterCount: 7 }

@@ -67,7 +67,7 @@ test.before(async () => {
   alt = await ClinicLocation.create({
     clinicName: "Test Active Clinic", city: "Test City", code: "TST", fullAddress: "Test address",
     status: "Active", isActive: true, bookingEnabled: true, timezone: "Asia/Karachi",
-    weeklyHours: defaultWeeklyHours(), slotDurationMinutes: 15
+    weeklyHours: defaultWeeklyHours(), slotDurationMinutes: 20
   });
   await Appointment.createIndexes();
   server = createApp().listen(0, "127.0.0.1");
@@ -112,7 +112,7 @@ test("fifty concurrent service bookings for one slot create exactly one active a
 });
 
 test("different slots book concurrently and appointment IDs remain globally unique", async () => {
-  const times = ["16:30", "16:45", "17:00", "17:15"];
+  const times = ["16:30", "16:50", "17:10", "17:30"];
   const appointments = await Promise.all(times.map((time, index) => createAppointment(
     booking({ time, phone: `0300111111${index}` }),
     { source: "website", idempotencyKey: `different-${index}` }
@@ -122,9 +122,10 @@ test("different slots book concurrently and appointment IDs remain globally uniq
 });
 
 test("the same local time can be booked at different active locations", async () => {
+  const date = futureOpenDate();
   const [one, two] = await Promise.all([
-    createAppointment(booking(), { source: "website", idempotencyKey: "clinic-one" }),
-    createAppointment(booking({ phone: "03000000002", locationId: alt.code }), { source: "website", idempotencyKey: "clinic-two" })
+    createAppointment(booking({ date, locationId: "BWP" }), { source: "website", idempotencyKey: "clinic-one" }),
+    createAppointment(booking({ date, phone: "03000000002", locationId: alt.code }), { source: "website", idempotencyKey: "clinic-two" })
   ]);
   assert.notEqual(one.activeSlotKey, two.activeSlotKey);
 });
@@ -132,12 +133,12 @@ test("the same local time can be booked at different active locations", async ()
 test("confirmed, scheduled and rescheduled appointments occupy slots while completed and cancelled release them", async () => {
   const date = futureOpenDate();
   const confirmed = await createAppointment(booking({ date, time: "16:30" }), { source: "website", idempotencyKey: "confirmed" });
-  const scheduled = await createAppointment(booking({ date, time: "16:45", phone: "03000000002" }), { source: "website", idempotencyKey: "scheduled" });
-  const rescheduled = await createAppointment(booking({ date, time: "17:00", phone: "03000000003" }), { source: "website", idempotencyKey: "rescheduled" });
+  const scheduled = await createAppointment(booking({ date, time: "16:50", phone: "03000000002" }), { source: "website", idempotencyKey: "scheduled" });
+  const rescheduled = await createAppointment(booking({ date, time: "17:10", phone: "03000000003" }), { source: "website", idempotencyKey: "rescheduled" });
   await Appointment.updateOne({ _id: scheduled._id }, { $set: { status: "scheduled" } });
   await Appointment.updateOne({ _id: rescheduled._id }, { $set: { status: "rescheduled" } });
   let slots = await getAvailableSlots("BWP", date);
-  for (const time of ["16:30", "16:45", "17:00"]) {
+  for (const time of ["16:30", "16:50", "17:10"]) {
     const slot = slots.find((entry) => entry.time === time);
     assert.deepEqual({ available: slot.available, booked: slot.booked }, { available: false, booked: true });
   }
@@ -145,14 +146,14 @@ test("confirmed, scheduled and rescheduled appointments occupy slots while compl
   await cancelAppointment({ appointmentId: scheduled.appointmentId, phone: scheduled.phoneE164 });
   slots = await getAvailableSlots("BWP", date);
   assert.equal(slots.find((entry) => entry.time === "16:30").available, true);
-  assert.equal(slots.find((entry) => entry.time === "16:45").available, true);
+  assert.equal(slots.find((entry) => entry.time === "16:50").available, true);
 });
 
 test("cancellation is idempotent, releases the slot and recalculates queue tokens", async () => {
   const date = futureOpenDate();
   const first = await createAppointment(booking({ date, time: "16:30" }), { source: "website", idempotencyKey: "queue-1" });
-  const second = await createAppointment(booking({ date, time: "16:45", phone: "03000000002" }), { source: "website", idempotencyKey: "queue-2" });
-  const third = await createAppointment(booking({ date, time: "17:00", phone: "03000000003" }), { source: "website", idempotencyKey: "queue-3" });
+  const second = await createAppointment(booking({ date, time: "16:50", phone: "03000000002" }), { source: "website", idempotencyKey: "queue-2" });
+  const third = await createAppointment(booking({ date, time: "17:10", phone: "03000000003" }), { source: "website", idempotencyKey: "queue-3" });
   const cancelled = await cancelAppointment({ appointmentId: second.appointmentId, phone: second.phoneE164, reason: "Patient request" });
   const repeated = await cancelAppointment({ appointmentId: second.appointmentId, phone: second.phoneE164, reason: "Repeated request" });
   assert.equal(cancelled.status, "cancelled");
@@ -168,20 +169,20 @@ test("rescheduling atomically claims a free slot and records populated-location 
   const newDate = futureOpenDate(1);
   const appointment = await createAppointment(booking({ date: oldDate }), { source: "website", idempotencyKey: "reschedule-free" });
   const populated = await Appointment.findById(appointment._id).populate("location");
-  const moved = await rescheduleAppointment({ appointmentId: populated.appointmentId, phone: populated.phoneE164, date: newDate, time: "17:00", locationId: alt.code });
+  const moved = await rescheduleAppointment({ appointmentId: populated.appointmentId, phone: populated.phoneE164, date: newDate, time: "17:10", locationId: alt.code });
   assert.equal(moved.status, "rescheduled");
   assert.equal(String(moved.location), String(alt._id));
   assert.equal(moved.rescheduleHistory.length, 1);
   assert.equal(String(moved.rescheduleHistory[0].previousLocation), String(bwp._id));
-  assert.equal(moved.activeSlotKey, activeSlotKey(alt._id, newDate, "17:00"));
+  assert.equal(moved.activeSlotKey, activeSlotKey(alt._id, newDate, "17:10"));
 });
 
 test("rescheduling to an occupied slot returns conflict and preserves the original claim", async () => {
   const date = futureOpenDate();
   const original = await createAppointment(booking({ date, time: "16:30" }), { source: "website", idempotencyKey: "move-source" });
-  await createAppointment(booking({ date, time: "16:45", phone: "03000000002" }), { source: "website", idempotencyKey: "move-destination" });
+  await createAppointment(booking({ date, time: "16:50", phone: "03000000002" }), { source: "website", idempotencyKey: "move-destination" });
   await assert.rejects(
-    rescheduleAppointment({ appointmentId: original.appointmentId, phone: original.phoneE164, date, time: "16:45" }),
+    rescheduleAppointment({ appointmentId: original.appointmentId, phone: original.phoneE164, date, time: "16:50" }),
     (error) => error.statusCode === 409
   );
   const unchanged = await Appointment.findById(original._id);
@@ -202,13 +203,13 @@ test("blocked dates, blocked slots, closed weekdays and Coming Soon clinics cann
   const comingSoon = await ClinicLocation.create({
     clinicName: "Coming Soon Test", city: "Future City", code: "CST", fullAddress: "TBA",
     status: "Coming Soon", isActive: true, bookingEnabled: true, timezone: "Asia/Karachi",
-    weeklyHours: defaultWeeklyHours(), slotDurationMinutes: 15
+    weeklyHours: defaultWeeklyHours(), slotDurationMinutes: 20
   });
   await assert.rejects(createAppointment(booking({ date: monday, locationId: comingSoon.code }), { source: "website" }), (error) => error.statusCode === 400);
 });
 
 test("past validation and timezone boundaries use the clinic timezone", async () => {
-  const settings = { timezone: "Asia/Karachi", weeklyHours: defaultWeeklyHours(), slotDurationMinutes: 15 };
+  const settings = { timezone: "Asia/Karachi", weeklyHours: defaultWeeklyHours(), slotDurationMinutes: 20 };
   const monday = futureOpenDate(0, 1);
   const before = DateTime.fromISO(`${monday}T16:29`, { zone: "Asia/Karachi" });
   const after = DateTime.fromISO(`${monday}T16:31`, { zone: "Asia/Karachi" });
@@ -226,8 +227,8 @@ test("website and WhatsApp retries are idempotent and different payload reuse is
   ]);
   assert.deepEqual([first.status, repeated.status].sort(), [201, 201]);
   assert.equal(first.data.appointment.appointmentId, repeated.data.appointment.appointmentId);
-  const whatsappOne = await createAppointment(booking({ time: "16:45", phone: "03000000002" }), { source: "whatsapp", idempotencyKey: "wamid.duplicate" });
-  const whatsappTwo = await createAppointment(booking({ time: "16:45", phone: "03000000002" }), { source: "whatsapp", idempotencyKey: "wamid.duplicate" });
+  const whatsappOne = await createAppointment(booking({ time: "16:50", phone: "03000000002" }), { source: "whatsapp", idempotencyKey: "wamid.duplicate" });
+  const whatsappTwo = await createAppointment(booking({ time: "16:50", phone: "03000000002" }), { source: "whatsapp", idempotencyKey: "wamid.duplicate" });
   assert.equal(whatsappOne.appointmentId, whatsappTwo.appointmentId);
   await assert.rejects(
     createAppointment(booking({ time: "17:00", phone: "03000000003" }), { source: "whatsapp", idempotencyKey: "wamid.duplicate" }),
@@ -252,10 +253,10 @@ test("verified returning contacts retain separate self and family profiles", asy
 
 test("all booking sources share blocked-slot rules and the unique indexes exist", async () => {
   const date = futureOpenDate();
-  await blockSlot({ locationId: "BWP", date, time: "18:00", reason: "Blocked" });
+  await blockSlot({ locationId: "BWP", date, time: "18:10", reason: "Blocked" });
   for (const source of ["website", "whatsapp", "staff"]) {
     await assert.rejects(
-      createAppointment(booking({ date, time: "18:00", phone: `0300${source.length}000000` }), { source, idempotencyKey: `source-${source}` }),
+      createAppointment(booking({ date, time: "18:10", phone: `0300${source.length}000000` }), { source, idempotencyKey: `source-${source}` }),
       (error) => error.statusCode === 409
     );
   }

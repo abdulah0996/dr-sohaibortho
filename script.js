@@ -55,7 +55,7 @@
 
   const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-  // Initial Chat Boot
+  // Initial Chat Boot (Prototype Aligned)
   function initChat() {
     const isUrdu = state.lang === "ur";
     state.chatMessages = [
@@ -64,9 +64,9 @@
         sender: "ai",
         title: isUrdu ? "👋 السلام علیکم!" : "👋 Assalam-o-Alaikum!",
         text: isUrdu
-          ? "میں ڈاکٹر صہیب کا AI اپوائنٹمنٹ اسسٹنٹ ہوں۔\n\nمیں اپوائنٹمنٹ بک یا مینیج کرنے، کلینک کی معلومات دیکھنے، رپورٹس اپ لوڈ کرنے، یا عملے سے رابطہ قائم کرنے میں آپ کی مدد کر سکتا ہوں۔\n\nآج میں آپ کی کیا مدد کر سکتا ہوں؟"
-          : "I'm Dr. Shoaib's AI Appointment Assistant.\n\nI can help you book or manage an appointment, view clinic information, upload reports, or connect you with clinic staff.\n\nHow can I help you today?",
-        time: "Now"
+          ? "ڈاکٹر شعیب کے کلینک (اقبال ہسپتال، بہاولپور) میں خوش آمدید۔\n\n• کلینک کی معلومات اور علاج\n• اپائنٹمنٹ بکنگ اور ریسیپشن\n\n⏰ کلینک کے اوقات:\nپیر تا جمعرات | شام 4:30 سے رات 8:30 تک\nجمعہ | رات 8:00 سے رات 9:00 تک\n\nآج میں آپ کی کیا مدد کر سکتا ہوں؟ 😊"
+          : "Welcome to Dr. Shoaib's Clinic (Iqbal Hospital, Bahawalpur).\n\n• Clinic information\n• Appointment booking\n\n⏰ Clinic Timings:\nMon–Thu | 4:30 PM – 8:30 PM\nFri | 8:00 PM – 9:00 PM\n\nWhat would you like help with today? 😊",
+        time: "5:16 pm"
       }
     ];
     state.showMainMenuCard = true;
@@ -235,19 +235,12 @@
     }
 
     switch (action) {
+      case "toggle_language":
       case "set_lang_en":
       case "set_lang_ur":
-        state.lang = action === "set_lang_ur" ? "ur" : "en";
-        pushMessage({ sender: "user", text: action === "set_lang_ur" ? "اردو" : "English", time: "Now" });
-        pushMessage({
-          sender: "ai",
-          text: state.lang === "ur" ? "آج میں آپ کی کیا مدد کر سکتا ہوں؟" : "How can I help you today?",
-          time: "Now"
-        });
-        state.showMainMenuCard = true;
-        state.currentFlow = "idle";
-        state.currentStep = "main_menu";
-        state.bookingStepIndex = 0;
+        state.lang = action === "toggle_language" ? (state.lang === "en" ? "ur" : "en") : (action === "set_lang_ur" ? "ur" : "en");
+        initChat();
+        render();
         break;
 
       case "show_main_menu":
@@ -820,6 +813,30 @@
         });
         break;
 
+      case "start_assessment":
+        state.currentFlow = "booking";
+        state.currentStep = "booking_concern";
+        if (!options.silentUserMsg) {
+          pushMessage({ sender: "user", text: isUrdu ? "🩺 علامات اور معائنہ" : "🩺 Start Assessment", time: "Now" });
+        }
+        pushMessage({
+          sender: "ai",
+          title: isUrdu ? "🩺 علامات اور معائنہ" : "🩺 Clinical Assessment & Symptoms",
+          text: isUrdu
+            ? "براہ کرم اپنی تکلیف یا علامت منتخب کریں یا نیچے تفصیل لکھیں:"
+            : "Please select your primary orthopedic symptom or type your concern below:",
+          quickReplies: [
+            { label: isUrdu ? "🦵 گھٹنے / کولہے کا درد" : "🦵 Knee / Hip Pain & Arthritis", action: "start_booking" },
+            { label: isUrdu ? "🦴 ہڈی کا فریکچر / چوٹ" : "🦴 Fracture & Trauma Injury", action: "start_booking" },
+            { label: isUrdu ? "🩺 کمر اور مہروں کا درد" : "🩺 Spine, Sciatica & Back Pain", action: "start_booking" },
+            { label: isUrdu ? "🏃 کھیلوں کی چوٹیں / پٹھے" : "🏃 Sports Injury & Ligament Tear", action: "start_booking" },
+            { label: isUrdu ? "👶 بچوں کی ہڈیوں کے مسائل" : "👶 Pediatric Bone Condition", action: "start_booking" },
+            { label: isUrdu ? "🏠 مین مینو" : "🏠 Main Menu", action: "show_main_menu" }
+          ],
+          time: "Now"
+        });
+        break;
+
       case "clinic_locations":
         pushMessage({ sender: "user", text: isUrdu ? "🏥 کلینک کی معلومات" : "🏥 Clinic Information", time: "Now" });
         pushMessage({
@@ -827,16 +844,20 @@
           title: isUrdu ? "🏥 کلینک کی معلومات" : "🏥 Clinic Locations & Timings",
           html: `
             <div class="structured-card">
-              <div class="card-badge info">📍 Bahawalpur</div>
+              <div class="card-badge info">📍 Iqbal Hospital Bahawalpur</div>
               <h3 style="color: var(--primary-dark-teal); margin-bottom: 6px;">Iqbal Hospital</h3>
               <p style="font-size: 0.88rem; color: var(--text-secondary); margin-bottom: 10px;">📍 Noor Mahal Road, Bahawalpur</p>
               <div class="card-detail-row">
-                <span class="card-detail-label">🗓️ ${isUrdu ? "دن" : "Days"}</span>
-                <span class="card-detail-value">Monday – Thursday</span>
+                <span class="card-detail-label">🗓️ ${isUrdu ? "پیر تا جمعرات" : "Mon – Thu"}</span>
+                <span class="card-detail-value">4:30 PM – 8:30 PM</span>
               </div>
               <div class="card-detail-row">
-                <span class="card-detail-label">🕒 ${isUrdu ? "وقت" : "Timing"}</span>
-                <span class="card-detail-value">4:30 PM – 8:30 PM</span>
+                <span class="card-detail-label">🗓️ ${isUrdu ? "جمعہ" : "Friday"}</span>
+                <span class="card-detail-value">8:00 PM – 9:00 PM</span>
+              </div>
+              <div class="card-detail-row">
+                <span class="card-detail-label">⏱️ ${isUrdu ? "دورانیہ" : "Slot Duration"}</span>
+                <span class="card-detail-value">20 Minutes</span>
               </div>
             </div>
             <div class="structured-card" style="opacity: 0.75;">
@@ -865,16 +886,16 @@
           title: isUrdu ? "👨‍⚕️ ڈاکٹر کا پروفائل" : "👨‍⚕️ Dr. Shoaib Profile",
           html: `
             <div class="structured-card">
-              <div class="card-badge info">Specialist Physician & Surgeon</div>
-              <h3 style="color: var(--primary-dark-teal); margin-bottom: 4px;">Dr. Shoaib</h3>
-              <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 12px;">Dedicated Specialist Physician & Surgeon practicing at Iqbal Hospital, Bahawalpur.</p>
+              <div class="card-badge info">Specialist Orthopedic & Trauma Surgeon</div>
+              <h3 style="color: var(--primary-dark-teal); margin-bottom: 4px;">Dr. Shoaib Aslam</h3>
+              <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 12px;">Specialist Orthopedic & Trauma Surgeon with 12+ years of surgical experience at Iqbal Hospital, Bahawalpur.</p>
               <div class="card-detail-row">
                 <span class="card-detail-label">🎓 ${isUrdu ? "قابلیت" : "Qualifications"}</span>
-                <span class="card-detail-value">MBBS, FCPS / Specialist Surgeon</span>
+                <span class="card-detail-value">MBBS, FCPS (Orthopedic Surgery)</span>
               </div>
               <div class="card-detail-row">
                 <span class="card-detail-label">🩺 ${isUrdu ? "تخصص" : "Specialty"}</span>
-                <span class="card-detail-value">Consultant Physician & Surgeon</span>
+                <span class="card-detail-value">Joint Replacement, Trauma, Spine & Arthroscopy</span>
               </div>
               <div class="card-detail-row">
                 <span class="card-detail-label">📍 ${isUrdu ? "کلینک" : "Clinic Location"}</span>
@@ -882,11 +903,11 @@
               </div>
               <div class="card-detail-row">
                 <span class="card-detail-label">🗓️ ${isUrdu ? "معائنہ کے دن" : "Consultation Days"}</span>
-                <span class="card-detail-value">Monday to Thursday</span>
+                <span class="card-detail-value">Mon–Thu (4:30–8:30 PM), Fri (8:00–9:00 PM)</span>
               </div>
               <div class="card-detail-row">
-                <span class="card-detail-label">🕒 ${isUrdu ? "وقت" : "Timing"}</span>
-                <span class="card-detail-value">4:30 PM – 8:30 PM</span>
+                <span class="card-detail-label">⏱️ ${isUrdu ? "معائنہ کا وقت" : "Consultation Time"}</span>
+                <span class="card-detail-value">20 Minutes Per Patient</span>
               </div>
             </div>
           `,
@@ -899,26 +920,34 @@
         break;
 
       case "treatment_info":
-        pushMessage({ sender: "user", text: isUrdu ? "🩺 علاج کی خدمات" : "🩺 Treatments & Services", time: "Now" });
+        pushMessage({ sender: "user", text: isUrdu ? "🦴 کلینک کی سہولیات" : "🦴 Explore Services", time: "Now" });
         pushMessage({
           sender: "ai",
-          title: isUrdu ? "🩺 کلینک کی خدمات" : "🩺 Clinic Treatments & Services",
+          title: isUrdu ? "🦴 کلینک کی خصوصی سہولیات" : "🦴 Orthopedic Specialties & Services",
           html: `
             <div class="structured-card">
               <div class="card-detail-row">
-                <span class="card-detail-label">🩺 General Consultation</span>
+                <span class="card-detail-label">🦴 Fracture & Trauma Surgery</span>
                 <span class="card-detail-value">Available</span>
               </div>
               <div class="card-detail-row">
-                <span class="card-detail-label">🦴 Surgical & Orthopaedic Evaluation</span>
+                <span class="card-detail-label">🦵 Knee & Hip Replacement (Arthroplasty)</span>
                 <span class="card-detail-value">Available</span>
               </div>
               <div class="card-detail-row">
-                <span class="card-detail-label">🧾 Follow-Up Consultation</span>
+                <span class="card-detail-label">🩺 Spine Care, Sciatica & Back Pain</span>
                 <span class="card-detail-value">Available</span>
               </div>
               <div class="card-detail-row">
-                <span class="card-detail-label">🩹 Post-Op Surgical Assessment</span>
+                <span class="card-detail-label">🏃 Sports Injuries & Ligament Arthroscopy</span>
+                <span class="card-detail-value">Available</span>
+              </div>
+              <div class="card-detail-row">
+                <span class="card-detail-label">👶 Pediatric Bone Deformity Care</span>
+                <span class="card-detail-value">Available</span>
+              </div>
+              <div class="card-detail-row">
+                <span class="card-detail-label">🩹 Post-Op Rehabilitation Guidance</span>
                 <span class="card-detail-value">Available</span>
               </div>
             </div>
@@ -1343,7 +1372,7 @@
   }
 
   // ----------------------------------------------------
-  // PATIENT PORTAL CHAT VIEW
+  // PATIENT PORTAL CHAT VIEW (PROTOTYPE ALIGNED)
   // ----------------------------------------------------
   function renderChatView() {
     const isUrdu = state.lang === "ur";
@@ -1353,22 +1382,22 @@
       <div class="patient-page" dir="${dir}">
         <section class="presentation-panel">
           <div class="brand-lockup">
-            <div class="logo">DS</div>
+            <div class="logo">🩻</div>
             <div>
               <strong>Dr. Shoaib</strong>
-              <small>Specialist Physician & Surgeon</small>
+              <small>Specialist Orthopedic & Trauma Surgeon</small>
             </div>
           </div>
           <div class="presentation-copy">
             <span class="eyebrow">${isUrdu ? "آفیشل پورٹل" : "Official Appointment Assistant"}</span>
-            <h1>${isUrdu ? "ڈاکٹر صہیب اسسٹنٹ" : "Dr. Shoaib AI Assistant"}</h1>
+            <h1>${isUrdu ? "ڈاکٹر شعیب اسسٹنٹ" : "Dr. Shoaib AI Assistant"}</h1>
             <p>Automated WhatsApp-style Appointment Booking & Clinic Portal</p>
           </div>
           <div class="clinic-mini">
             <div class="status-dot"></div>
             <div>
               <strong>Iqbal Hospital, Bahawalpur</strong>
-              <small>Noor Mahal Road (Mon - Thu, 4:30 PM - 8:30 PM)</small>
+              <small>Noor Mahal Road (Mon–Thu 4:30–8:30 PM, Fri 8:00–9:00 PM)</small>
             </div>
           </div>
           <button class="admin-entry" id="switch-to-admin">
@@ -1380,19 +1409,19 @@
         <main class="chat-stage">
           <div class="phone">
             <header class="chat-header">
+              <button class="header-back-btn" id="chat-header-back" title="Main Menu">←</button>
               <div class="avatar-container">
-                <div class="avatar">👨‍⚕️</div>
-                <div class="online-dot"></div>
+                <div class="avatar-badge">🩻<span class="steth-badge">🩺</span></div>
               </div>
               <div class="chat-title">
-                <strong>Dr. Shoaib</strong>
-                <small>● ${state.conversationMode === "HUMAN" ? (isUrdu ? "عملہ آن لائن ہے" : "Clinic Staff Connected") : (isUrdu ? "AI اپوائنٹمنٹ اسسٹنٹ" : "AI Appointment Assistant")}</small>
+                <strong>${isUrdu ? "آرتھوپیڈک چیٹ باٹ" : "Orthopedic Chatbot"}</strong>
+                <small>${isUrdu ? "اے آئی اپائنٹمنٹ اسسٹنٹ" : "AI Appointment Assistant"}</small>
               </div>
-              <button class="header-button" id="lang-toggle-chat">🌐 ${isUrdu ? "English" : "اردو"}</button>
+              <button class="header-lang-pill" id="lang-toggle-chat">🌐 ${isUrdu ? "EN" : "اردو"}</button>
             </header>
 
             <div class="safety-strip">
-              🔒 ${isUrdu ? "محفوظ اپوائنٹمنٹ پورٹل" : "Secure Appointment & Consultation Portal"}
+              🔒 ${isUrdu ? "محفوظ اپوائنٹمنٹ پورٹل — اقبال ہسپتال بہاولپور" : "Secure Appointment Portal — Iqbal Hospital Bahawalpur"}
             </div>
 
             ${renderProgressBarHtml()}
@@ -1410,76 +1439,45 @@
                       `).join('')}
                     </div>
                   ` : ''}
+                  <span class="msg-timestamp">${esc(msg.time || "5:16 pm")}</span>
                 </div>
               `).join('')}
 
               ${state.showMainMenuCard ? `
-                <div class="menu-card" id="main-menu-options-card">
-                  <p><strong>${isUrdu ? "آپ کی کیا مدد کی جا سکتی ہے؟" : "How can I help you today?"}</strong></p>
-                  <div class="menu-poll-list">
-                    <button class="menu-poll-option" data-action="start_booking">
-                      <div class="menu-poll-icon">📅</div>
-                      <div class="menu-poll-content">
-                        <strong>${isUrdu ? "اپوائنٹمنٹ بک کریں" : "Book Appointment"}</strong>
-                        <small>${isUrdu ? "اقبال ہسپتال بہاولپور" : "Iqbal Hospital Bahawalpur"}</small>
-                      </div>
-                      <span class="menu-poll-chevron">→</span>
+                <div class="prototype-card" id="main-menu-options-card">
+                  <div class="prototype-card-title">${isUrdu ? "ایک آپشن منتخب کریں" : "Choose one option"}</div>
+                  <div class="prototype-option-list">
+                    <button class="prototype-option-btn" data-action="start_booking">
+                      <span class="radio-circle"></span>
+                      <span class="prototype-option-label">📅 ${isUrdu ? "اپائنٹمنٹ بک کریں" : "Book Appointment"}</span>
                     </button>
-                    <button class="menu-poll-option" data-action="manage_booking">
-                      <div class="menu-poll-icon">📋</div>
-                      <div class="menu-poll-content">
-                        <strong>${isUrdu ? "اپوائنٹمنٹ مینیج کریں" : "Manage Appointment"}</strong>
-                        <small>${isUrdu ? "دیکھیں / تبدیل / منسوخ" : "View / Reschedule / Cancel"}</small>
-                      </div>
-                      <span class="menu-poll-chevron">→</span>
+                    <button class="prototype-option-btn" data-action="start_assessment">
+                      <span class="radio-circle"></span>
+                      <span class="prototype-option-label">🩺 ${isUrdu ? "علامات اور معائنہ" : "Start Assessment"}</span>
                     </button>
-                    <button class="menu-poll-option" data-action="clinic_locations">
-                      <div class="menu-poll-icon">🏥</div>
-                      <div class="menu-poll-content">
-                        <strong>${isUrdu ? "کلینک کی معلومات" : "Clinic Information"}</strong>
-                        <small>${isUrdu ? "بہاولپور اور دیگر کلینک" : "Bahawalpur & Regional Clinics"}</small>
-                      </div>
-                      <span class="menu-poll-chevron">→</span>
+                    <button class="prototype-option-btn" data-action="treatment_info">
+                      <span class="radio-circle"></span>
+                      <span class="prototype-option-label">🦴 ${isUrdu ? "کلینک کی سہولیات" : "Explore Services"}</span>
                     </button>
-                    <button class="menu-poll-option" data-action="treatment_info">
-                      <div class="menu-poll-icon">🩺</div>
-                      <div class="menu-poll-content">
-                        <strong>${isUrdu ? "علاج کی معلومات" : "Treatments & Services"}</strong>
-                        <small>${isUrdu ? "سرجری اور مشاہدہ" : "Surgical & Consultation Overview"}</small>
-                      </div>
-                      <span class="menu-poll-chevron">→</span>
+                    <button class="prototype-option-btn" data-action="upload_report">
+                      <span class="radio-circle"></span>
+                      <span class="prototype-option-label">📄 ${isUrdu ? "ایکسرے / ایم آر آئی اپ لوڈ" : "Upload X-ray / MRI"}</span>
                     </button>
-                    <button class="menu-poll-option" data-action="doctor_profile">
-                      <div class="menu-poll-icon">👨‍⚕️</div>
-                      <div class="menu-poll-content">
-                        <strong>${isUrdu ? "ڈاکٹر کا پروفائل" : "Doctor Profile"}</strong>
-                        <small>${isUrdu ? "قابلیت اور اوقات" : "Qualifications & Timings"}</small>
-                      </div>
-                      <span class="menu-poll-chevron">→</span>
+                    <button class="prototype-option-btn" data-action="doctor_profile">
+                      <span class="radio-circle"></span>
+                      <span class="prototype-option-label">👨‍⚕️ ${isUrdu ? "ڈاکٹر شعیب کا تعارف" : "About the Doctor"}</span>
                     </button>
-                    <button class="menu-poll-option" data-action="booking_type_online">
-                      <div class="menu-poll-icon">💻</div>
-                      <div class="menu-poll-content">
-                        <strong>${isUrdu ? "آن لائن مشاورت" : "Online Consultation"}</strong>
-                        <small>${isUrdu ? "ورچوئل کلینک درخواست" : "Virtual Clinic Request"}</small>
-                      </div>
-                      <span class="menu-poll-chevron">→</span>
+                    <button class="prototype-option-btn" data-action="clinic_locations">
+                      <span class="radio-circle"></span>
+                      <span class="prototype-option-label">🏥 ${isUrdu ? "کلینک معلومات و اوقات" : "Clinic Information"}</span>
                     </button>
-                    <button class="menu-poll-option" data-action="upload_report">
-                      <div class="menu-poll-icon">📎</div>
-                      <div class="menu-poll-content">
-                        <strong>${isUrdu ? "رپورٹ اپ لوڈ کریں" : "Upload Reports"}</strong>
-                        <small>${isUrdu ? "ایکس رے / لیب / نسخہ" : "Upload X-ray / Lab / Prescriptions"}</small>
-                      </div>
-                      <span class="menu-poll-chevron">→</span>
+                    <button class="prototype-option-btn" data-action="speak_to_staff">
+                      <span class="radio-circle"></span>
+                      <span class="prototype-option-label">☎️ ${isUrdu ? "عملے سے رابطہ کریں" : "Contact Reception"}</span>
                     </button>
-                    <button class="menu-poll-option" data-action="speak_to_staff">
-                      <div class="menu-poll-icon">👤</div>
-                      <div class="menu-poll-content">
-                        <strong>${isUrdu ? "عملے سے بات کریں" : "Speak to Clinic Staff"}</strong>
-                        <small>${isUrdu ? "کلینک اسسٹنٹ رابطہ" : "Human Assistant Takeover"}</small>
-                      </div>
-                      <span class="menu-poll-chevron">→</span>
+                    <button class="prototype-option-btn" data-action="toggle_language">
+                      <span class="radio-circle"></span>
+                      <span class="prototype-option-label">🌐 ${isUrdu ? "زبان تبدیل کریں" : "Change Language"}</span>
                     </button>
                   </div>
                 </div>
@@ -1487,10 +1485,13 @@
             </div>
 
             <form class="composer" id="chat-composer">
-              <button type="button" class="attach" id="attach-file-btn" title="Upload Document">📎</button>
-              <input type="text" id="chat-input" placeholder="${isUrdu ? 'پیغام لکھیں...' : 'Type your message...'}" required>
-              <button type="submit" aria-label="Send">➤</button>
+              <button type="button" class="composer-attach-btn" id="attach-file-btn" title="Upload Document">🖼️<span class="plus-mini">+</span></button>
+              <input type="text" id="chat-input" placeholder="${isUrdu ? 'اپنی بات یہاں لکھیں...' : 'Type your concern here...'}" required>
+              <button type="submit" class="composer-send-btn" aria-label="Send">✈️</button>
             </form>
+            <div class="chat-disclaimer-footer">
+              🛡️ ${isUrdu ? "یہ صرف عمومی رہنمائی ہے۔ ہنگامی صورت میں فوری طبی امداد حاصل کریں۔" : "General guidance only. For emergencies, seek immediate in-person care."}
+            </div>
           </div>
         </main>
       </div>
@@ -1500,11 +1501,8 @@
     if (chatBody) chatBody.scrollTop = chatBody.scrollHeight;
 
     document.getElementById("switch-to-admin")?.addEventListener("click", () => navigateTo("/admin/dashboard"));
-    document.getElementById("lang-toggle-chat")?.addEventListener("click", () => {
-      state.lang = state.lang === "en" ? "ur" : "en";
-      initChat();
-      render();
-    });
+    document.getElementById("chat-header-back")?.addEventListener("click", () => handleChatAction("show_main_menu"));
+    document.getElementById("lang-toggle-chat")?.addEventListener("click", () => handleChatAction("toggle_language"));
     document.getElementById("attach-file-btn")?.addEventListener("click", () => handleChatAction("upload_report"));
 
     document.querySelectorAll("[data-action]").forEach(btn => {

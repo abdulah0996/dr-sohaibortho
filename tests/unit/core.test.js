@@ -6,12 +6,12 @@ const { formatAppointmentId } = require("../../src/services/appointmentService")
 const { languageMessage, mainMenu } = require("../../src/conversation/messages");
 const { tr } = require("../../src/conversation/translations");
 
-const location = { _id: "location", code: "BWP", timezone: "Asia/Karachi", slotDurationMinutes: 15, weeklyHours: defaultWeeklyHours() };
+const location = { _id: "location", code: "BWP", timezone: "Asia/Karachi", slotDurationMinutes: 20, weeklyHours: defaultWeeklyHours() };
 test("appointment IDs use Sohaib format", () => assert.equal(formatAppointmentId("bwp", 2026, 1), "DS-2026-0001"));
-test("tokens follow appointment time order", () => { assert.equal(tokenNumberForTime(location, "2026-08-10", "16:30"), "001"); assert.equal(tokenNumberForTime(location, "2026-08-10", "17:00"), "003"); });
-test("tokens reject off-grid times", () => assert.equal(tokenNumberForTime(location, "2026-08-10", "16:40"), ""));
+test("tokens follow appointment time order", () => { assert.equal(tokenNumberForTime(location, "2026-08-10", "16:30"), "001"); assert.equal(tokenNumberForTime(location, "2026-08-10", "16:50"), "002"); assert.equal(tokenNumberForTime(location, "2026-08-10", "17:10"), "003"); });
+test("tokens reject off-grid times", () => assert.equal(tokenNumberForTime(location, "2026-08-10", "16:45"), ""));
 test("location is part of slot uniqueness key", () => assert.notEqual(slotKey("a", "2026-08-10", "16:30"), slotKey("b", "2026-08-10", "16:30")));
-test("closed dates are rejected", () => assert.equal(validateSlotAgainstSchedule({ settings: location, date: "2026-08-14", time: "16:30", now: require("luxon").DateTime.fromISO("2026-08-01", { zone: "Asia/Karachi" }) }).ok, false));
+test("closed dates are rejected", () => assert.equal(validateSlotAgainstSchedule({ settings: location, date: "2026-08-15", time: "16:30", now: require("luxon").DateTime.fromISO("2026-08-01", { zone: "Asia/Karachi" }) }).ok, false));
 test("past dates are rejected", () => assert.match(validateSlotAgainstSchedule({ settings: location, date: "2026-07-01", time: "16:30", now: require("luxon").DateTime.fromISO("2026-08-01", { zone: "Asia/Karachi" }) }).reason, /Past/));
 test("interactive button IDs are parsed independently from titles", () => { const x = extractWebhookMessages({ entry: [{ changes: [{ value: { messages: [{ id: "wamid.1", from: "923001234567", type: "interactive", interactive: { button_reply: { id: "MENU_BOOK", title: "Book Appointment" } } }] } }] }] }).messages[0]; assert.equal(x.replyId, "MENU_BOOK"); assert.equal(x.replyTitle, "Book Appointment"); });
 test("interactive list IDs are parsed", () => { const x = extractWebhookMessages({ entry: [{ changes: [{ value: { messages: [{ id: "wamid.2", from: "923001234567", type: "interactive", interactive: { list_reply: { id: "LOCATION_BWP", title: "Iqbal Hospital" } } }] } }] }] }).messages[0]; assert.equal(x.replyId, "LOCATION_BWP"); });
@@ -23,5 +23,5 @@ test("webhook verification tokens tolerate surrounding whitespace but reject emp
   assert.equal(verifyWebhookToken("", ""), false);
 });
 test("language selection uses stable IDs", () => assert.deepEqual(languageMessage().buttons.map((x) => x.id), ["LANG_EN", "LANG_UR"]));
-test("main menu uses an interactive list", () => { const menu = mainMenu("en"); assert.equal(menu.kind, "list"); assert.equal(menu.sections[0].rows.length, 7); assert.ok(menu.sections[0].rows.some((row) => row.id === "MENU_UPLOAD")); });
-test("Urdu booking content does not fall back to English", () => assert.match(tr("ur", "name"), /[\u0600-\u06FF]/));
+test("main menu uses an interactive list", () => { const menu = mainMenu("en"); assert.equal(menu.kind, "list"); assert.equal(menu.sections[0].rows.length, 10); assert.ok(menu.sections[0].rows.some((row) => row.id === "MENU_UPLOAD")); });
+test("Urdu booking content does not fall back to English", () => assert.match(tr("ur", "bookStep1Name"), /[\u0600-\u06FF]/));

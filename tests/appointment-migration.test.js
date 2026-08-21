@@ -24,7 +24,7 @@ test("duplicate audit is read-only and the migration index enforces active slot 
   const location = await ClinicLocation.create({
     clinicName: "Migration Test", city: "Bahawalpur", code: "MIG", fullAddress: "Test",
     status: "Active", isActive: true, bookingEnabled: true, timezone: "Asia/Karachi",
-    weeklyHours: defaultWeeklyHours(), slotDurationMinutes: 15
+    weeklyHours: defaultWeeklyHours(), slotDurationMinutes: 20
   });
   const base = {
     tokenNumber: "001", patient: new mongoose.Types.ObjectId(),

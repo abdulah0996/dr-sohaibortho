@@ -16,16 +16,16 @@ async function getOrSeedProfile() {
     if (config.isProduction) return null;
     profile = await DoctorProfile.create({
       doctorKey: "dr-sohaib",
-      doctorName: "Dr. Sohaib",
+      doctorName: "Dr. Shoaib",
       profileImage: "/assets/dr-sohaib.png",
-      qualification: "Specialist Physician & Surgeon",
-      specialty: "General & Specialty Clinical Consultation, Surgical Evaluation & Patient Care",
-      experience: "12+ Years Clinical Experience",
-      services: "Professional Consultations, Surgical Evaluations, Comprehensive Diagnosis & Follow-up Care",
+      qualification: "Specialist Orthopedic & Trauma Surgeon",
+      specialty: "Joint Replacement, Trauma & Fracture Surgery, Spine Care, Sports Injuries & Arthroscopy",
+      experience: "12+ Years Clinical & Surgical Experience",
+      services: "Orthopedic Consultations, Fracture Management, Joint Replacement, Spine Treatment, Sports Injury Care",
       consultationLocation: "Iqbal Hospital, Noor Mahal Road, Bahawalpur",
-      consultationDays: "Monday to Thursday",
-      consultationTimings: "4:30 PM to 8:30 PM",
-      bio: "Dr. Sohaib is a dedicated physician and surgeon based at Iqbal Hospital, Bahawalpur. He provides professional consultations, surgical evaluations, and follow-up care for patients."
+      consultationDays: "Monday to Thursday (4:30 PM – 8:30 PM), Friday (8:00 PM – 9:00 PM)",
+      consultationTimings: "Mon–Thu 4:30 PM – 8:30 PM | Fri 8:00 PM – 9:00 PM",
+      bio: "Dr. Shoaib is a specialist orthopedic and trauma surgeon at Iqbal Hospital, Bahawalpur with over 12 years of clinical and surgical expertise in joint reconstruction, fractures, spine care, and sports injuries."
     });
   }
   return profile;

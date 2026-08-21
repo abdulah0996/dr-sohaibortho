@@ -64,7 +64,7 @@ router.post("/", publicFormLimiter, asyncHandler(async (req, res) => {
   res.status(201).json({
     success: true,
     session: { id: session._id, humanRequired: session.humanRequired },
-    message: "Your message has been sent to Dr. Sohaib's clinic staff. An assistant will contact you shortly."
+    message: "Your message has been sent to Dr. Shoaib's clinic staff. An assistant will contact you shortly."
   });
 }));
 
