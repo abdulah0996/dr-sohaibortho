@@ -11,8 +11,6 @@ let stopOwnerEmailSchedulerForTests;
 let StaffUser;
 let ClinicLocation;
 let logError;
-let migrateClinicSchedules;
-let isValidWeeklyHours;
 let bootstrapError;
 
 try {
@@ -23,8 +21,6 @@ try {
   ({ startOwnerEmailScheduler, stopOwnerEmailSchedulerForTests } = require("./src/services/ownerEmailOutboxService"));
   ({ StaffUser, ClinicLocation } = require("./src/models"));
   ({ logError } = require("./src/utils/safeLogger"));
-  ({ migrateClinicSchedules } = require("./scripts/migrate-clinic-schedules"));
-  ({ isValidWeeklyHours } = require("./src/domain/scheduleRules"));
 } catch (error) {
   bootstrapError = error;
 }
@@ -56,16 +52,6 @@ async function inspectInitialData() {
     StaffUser.countDocuments(),
     ClinicLocation.countDocuments()
   ]);
-  if (config.isProduction && locationCount > 0) {
-    const [bwp, comingSoonCount] = await Promise.all([
-      ClinicLocation.findOne({ code: "BWP" }).select("weeklyHours slotDurationMinutes").lean(),
-      ClinicLocation.countDocuments({ code: { $in: ["BWN", "RYK"] }, status: "Coming Soon" })
-    ]);
-    if (!bwp || !isValidWeeklyHours(bwp.weeklyHours, bwp.slotDurationMinutes) || comingSoonCount !== 2) {
-      await migrateClinicSchedules();
-      console.log("Required clinic schedule migration completed.");
-    }
-  }
   return { staffCount, locationCount };
 }
 
