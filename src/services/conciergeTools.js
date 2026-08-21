@@ -9,6 +9,7 @@ const { OCCUPYING_APPOINTMENT_STATUSES } = require("../domain/appointmentRules")
 
 const schemas = {
   getAvailableSlots: z.object({ locationId: z.string().min(1).max(100), date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) }).strict(),
+  getAvailableDates: z.object({ locationId: z.string().min(1).max(100), days: z.number().int().min(1).max(60).optional() }).strict(),
   createAppointment: z.object({
     confirmed: z.literal(true), fullName: z.string().min(2).max(160), phone: z.string().min(7).max(40),
     age: z.number().int().min(0).max(130).optional(), patientFor: z.enum(["self", "family", "unknown"]).optional(), reason: z.string().min(2).max(1000),
@@ -40,6 +41,11 @@ function createConciergeTools(deps = {}) {
       const value = parse(schemas.getAvailableSlots, input);
       const slots = await availability.getAvailableSlots(value.locationId, value.date);
       return slots.filter((slot) => slot.available).map((slot) => ({ time: slot.time }));
+    },
+    async get_available_dates(input) {
+      const value = parse(schemas.getAvailableDates, input);
+      const dates = await availability.getAvailableDates(value.locationId, value.days);
+      return dates.map((entry) => ({ date: entry.date, availableSlots: entry.availableSlots }));
     },
     async create_appointment(input) {
       const value = parse(schemas.createAppointment, input);

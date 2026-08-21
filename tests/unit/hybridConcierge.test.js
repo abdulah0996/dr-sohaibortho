@@ -160,8 +160,12 @@ test("one natural request asks only for a real available time and requires expli
   });
   const phoneE164 = "+923001234567";
   let response = await handle({ phoneE164, text: "Meri mother Fatima age 58 ko Monday appointment chahiye" });
-  assert.equal(response.kind, "buttons");
-  assert.match(response.body, /available times/i);
+  // Times are now offered as a WhatsApp interactive list (up to 10 real slots)
+  // instead of 3 reply buttons.
+  assert.equal(response.kind, "list");
+  assert.match(response.body, /slots are open/i);
+  const offered = response.sections[0].rows.map((row) => row.id);
+  assert.deepEqual(offered, ["AI_TIME_17:15", "AI_TIME_17:45"]);
   assert.equal(createCalls, 0);
   response = await handle({ phoneE164, text: "5:15", replyId: "AI_TIME_17:15" });
   assert.equal(response.buttons[0].id, "AI_REPORTS_YES");
@@ -180,15 +184,18 @@ test("missing information is requested once without repeating supplied facts", a
   const sessions = memorySessions();
   const tools = {
     get_clinic_information: async () => [{ _id: "clinic-1", code: "BWP", clinicName: "Iqbal Hospital", city: "Bahawalpur", status: "Active" }],
+    get_available_slots: async () => [{ time: "17:15" }, { time: "17:45" }],
+    get_available_dates: async () => [{ date: "2026-08-24", availableSlots: 2 }],
     request_staff_handoff: async () => undefined
   };
   const handle = createConversationOrchestrator({
     models: { ConversationSession: sessions.model }, tools,
     understand: async () => ({ intent: "book", language: "en", patientFor: "self", patientName: null, age: null,
-      concern: "Knee pain", clinic: null, preferredDate: "2026-08-24", preferredTime: null,
+      concern: "Knee pain", clinic: null, preferredDate: "2026-08-24", preferredTime: "17:15",
       appointmentId: null, reportsAvailable: null, confidence: 0.9 })
   });
-  const response = await handle({ phoneE164: "+923001234567", text: "Appointment Monday for knee pain" });
+  const response = await handle({ phoneE164: "+923001234567", text: "Appointment Monday 5:15pm for knee pain" });
+  // Date, time and concern were all supplied, so the only remaining gap is the name.
   assert.match(response.body, /full name/i);
-  assert.doesNotMatch(response.body, /which day|what.*check/i);
+  assert.doesNotMatch(response.body, /which day|what.*check|slots are open/i);
 });
