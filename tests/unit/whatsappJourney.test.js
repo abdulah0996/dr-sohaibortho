@@ -239,3 +239,120 @@ test("English and Urdu translation tables stay in full key parity", () => {
     assert.ok(String(copy.ur[key] || "").trim().length > 0, `Urdu copy missing for ${key}`);
   }
 });
+
+// --- Approved prototype menu parity (screenshot reference) ---
+
+const {
+  mainMenuFallbackText, listFallbackText, menuIdFromNumber,
+  MAIN_MENU_PRIMARY, MAIN_MENU_APPOINTMENT, MAIN_MENU_ORDER
+} = require("../../src/conversation/messages");
+
+// The eight options the client approved, in the exact order of the reference UI.
+const APPROVED_ORDER = [
+  "MENU_BOOK", "MENU_ASSESS", "MENU_SERVICES", "MENU_UPLOAD",
+  "MENU_ABOUT", "MENU_CLINIC", "MENU_STAFF", "MENU_LANG"
+];
+
+test("the primary menu section reproduces the approved options in the approved order", () => {
+  for (const lang of ["en", "ur"]) {
+    const menu = mainMenu(lang);
+    assert.equal(menu.kind, "list");
+    assert.deepEqual(menu.sections[0].rows.map((row) => row.id), APPROVED_ORDER, `${lang} primary section drifted`);
+    assert.deepEqual(menu.sections[1].rows.map((row) => row.id), ["MENU_CHECK", "MENU_RESCHEDULE"]);
+  }
+});
+
+test("menu option ids are stable and routing never depends on the visible label", () => {
+  assert.deepEqual(MAIN_MENU_PRIMARY.map((item) => item.id), APPROVED_ORDER);
+  assert.deepEqual(MAIN_MENU_ORDER.map((item) => item.id), [...APPROVED_ORDER, "MENU_CHECK", "MENU_RESCHEDULE"]);
+  // Ids must be language independent: same ids whichever language renders them.
+  assert.deepEqual(
+    mainMenu("en").sections.flatMap((s) => s.rows).map((r) => r.id),
+    mainMenu("ur").sections.flatMap((s) => s.rows).map((r) => r.id)
+  );
+});
+
+test("every menu row fits WhatsApp limits in both languages", () => {
+  for (const lang of ["en", "ur"]) {
+    const menu = mainMenu(lang);
+    assert.ok(menu.buttonText.length <= 20, `${lang} button text too long`);
+    assert.ok(menu.sections.flatMap((s) => s.rows).length <= 10, "WhatsApp allows 10 rows across all sections");
+    for (const section of menu.sections) {
+      assert.ok(section.title.length <= 24, `${lang} section title too long: ${section.title}`);
+      for (const row of section.rows) {
+        assert.ok(row.title.length <= 24, `${lang} row title would be truncated: ${row.title}`);
+        assert.ok(row.description.length <= 72, `${lang} row description too long: ${row.title}`);
+      }
+    }
+  }
+});
+
+test("menu labels keep the approved emoji and wording in English", () => {
+  const titles = mainMenu("en").sections.flatMap((s) => s.rows).map((r) => r.title);
+  assert.deepEqual(titles.slice(0, 8), [
+    "📅 Book Appointment", "🩺 Start Assessment", "🦴 Explore Services", "📄 Upload X-ray / MRI",
+    "👨‍⚕️ About the Doctor", "🏥 Clinic Information", "☎️ Contact Reception", "🌐 Change Language"
+  ]);
+});
+
+test("the Urdu menu is fully translated and never falls back to English labels", () => {
+  for (const row of mainMenu("ur").sections.flatMap((s) => s.rows)) {
+    assert.match(row.title, /[\u0600-\u06FF]/, `${row.id} is not translated`);
+  }
+  for (const section of mainMenu("ur").sections) {
+    assert.match(section.title, /[\u0600-\u06FF]/, `section "${section.title}" is not translated`);
+  }
+});
+
+test("the text fallback preserves the interactive ordering exactly", () => {
+  for (const lang of ["en", "ur"]) {
+    const fallback = mainMenuFallbackText(lang);
+    assert.equal(fallback.kind, "text");
+    const rows = mainMenu(lang).sections.flatMap((s) => s.rows);
+    rows.forEach((row, index) => {
+      assert.ok(fallback.body.includes(`${index + 1}. ${row.title}`), `${lang} fallback missing "${index + 1}. ${row.title}"`);
+    });
+  }
+});
+
+test("the fallback works for any interactive list, not just the main menu", () => {
+  const someList = { kind: "list", body: "Pick a time", sections: [{ title: "Times", rows: [{ id: "AI_TIME_16:30", title: "🕒 4:30 PM" }, { id: "AI_TIME_16:50", title: "🕒 4:50 PM" }] }] };
+  const fallback = listFallbackText(someList, "en");
+  assert.match(fallback.body, /1\. 🕒 4:30 PM/);
+  assert.match(fallback.body, /2\. 🕒 4:50 PM/);
+});
+
+test("numbers from the text fallback map back to the correct stable ids", () => {
+  MAIN_MENU_ORDER.forEach((item, index) => assert.equal(menuIdFromNumber(index + 1), item.id));
+  for (const bad of [0, 11, -1, "", "x", null, undefined, 1.5]) {
+    assert.equal(menuIdFromNumber(bad), "", `${JSON.stringify(bad)} must not select a menu option`);
+  }
+});
+
+test("a numbered fallback reply reaches the same handler as tapping the row", async () => {
+  const handle = orchestratorWith();
+  const phoneE164 = "+923001234567";
+  await handle({ phoneE164, text: "Hi" });
+  // "6" is Clinic Information in the approved order.
+  const typed = await handle({ phoneE164, text: "6" });
+
+  const tapHandle = orchestratorWith();
+  await tapHandle({ phoneE164, text: "Hi" });
+  const tapped = await tapHandle({ phoneE164, text: "Clinic Information", replyId: "MENU_CLINIC" });
+
+  assert.equal(typed.kind, tapped.kind);
+  assert.equal(typed.body, tapped.body);
+  assert.match(typed.body, /Iqbal Hospital/);
+});
+
+test("a bare number mid-booking is treated as data, never as a menu jump", async () => {
+  const handle = orchestratorWith();
+  const phoneE164 = "+923001234567";
+  const dateId = (await handle({ phoneE164, text: "Book", replyId: "MENU_BOOK" })).sections[0].rows[0].id;
+  const timeId = (await handle({ phoneE164, text: "Date", replyId: dateId })).sections[0].rows[0].id;
+  const namePrompt = await handle({ phoneE164, text: "Time", replyId: timeId });
+  assert.match(namePrompt.body, /full name/i);
+  // The patient is at the name step; "6" must not open Clinic Information.
+  const afterNumber = await handle({ phoneE164, text: "6" });
+  assert.doesNotMatch(String(afterNumber.body || ""), /Iqbal Hospital Bahawalpur/);
+});

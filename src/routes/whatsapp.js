@@ -14,6 +14,8 @@ const {
   sendStaffMessage
 } = require("../services/whatsappService");
 const { handleIncomingMessage } = require("../conversation/orchestrator");
+const { listFallbackText } = require("../conversation/messages");
+const { logError } = require("../utils/safeLogger");
 const { transcribeWhatsAppVoiceNote } = require("../services/voiceTranscriptionService");
 const { storeWhatsAppReport } = require("../services/whatsappReportService");
 const { ConversationSession, WhatsAppMessage, Patient } = require("../models");
@@ -95,7 +97,16 @@ router.post("/webhook", webhookLimiter, asyncHandler(async (req, res) => {
         const reply = await handleIncomingMessage({ phoneE164: message.phoneE164, text: patientText, replyId: message.replyId, messageId: message.metaMessageId, source });
         if (!reply?.notificationQueued) {
           if (reply?.kind === "buttons") await sendReplyButtons(message.phoneE164, reply.body, reply.buttons);
-          else if (reply?.kind === "list") await sendInteractiveList(message.phoneE164, reply.body, reply.buttonText, reply.sections);
+          else if (reply?.kind === "list") {
+            const sent = await sendInteractiveList(message.phoneE164, reply.body, reply.buttonText, reply.sections);
+            // Meta rejects malformed interactive payloads without throwing, which would
+            // otherwise leave the patient with no reply at all. Fall back to plain text.
+            if (sent?.status === "failed") {
+              logError("WhatsApp interactive list rejected; sending text fallback", new Error(sent.failureCode || "META_SEND_FAILED"));
+              const language = (await ConversationSession.findOne({ phoneE164: message.phoneE164 }).select("language").lean())?.language;
+              await sendText(message.phoneE164, listFallbackText(reply, language).body);
+            }
+          }
           else if (reply?.body) await sendText(message.phoneE164, reply.body);
         }
       }

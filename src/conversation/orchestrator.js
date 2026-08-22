@@ -21,6 +21,7 @@ const {
   concernList,
   displayTime,
   displayDate,
+  menuIdFromNumber,
   CONCERN_OPTIONS
 } = require("./messages");
 
@@ -235,7 +236,13 @@ function createConversationOrchestrator(deps = {}) {
     }
 
     const input = String(rawText || "").trim();
-    const action = String(replyId || input).trim();
+    let action = String(replyId || input).trim();
+    // The plain-text fallback menu lists options by number. Only translate a bare
+    // number while the patient is idle, so mid-booking replies are never hijacked.
+    if (!replyId && session.state === "IDLE") {
+      const numberedChoice = menuIdFromNumber(input);
+      if (numberedChoice) action = numberedChoice;
+    }
     const upper = action.toUpperCase();
 
     // 1. Language Toggle Actions

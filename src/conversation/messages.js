@@ -6,6 +6,8 @@ const { tr } = require("./translations");
 const LIST_MAX_ROWS = 10;
 const ROW_TITLE_MAX = 24;
 const ROW_DESC_MAX = 72;
+const BUTTON_TEXT_MAX = 20;
+const SECTION_TITLE_MAX = 24;
 
 function buttons(body, options) {
   return { kind: "buttons", body, buttons: options.slice(0, 3) };
@@ -58,67 +60,73 @@ function languageMessage() {
   );
 }
 
+// Single source of truth for the approved menu. Ordering here drives the
+// interactive list, the plain-text fallback and the numeric fallback routing,
+// so the three can never drift apart.
+const MAIN_MENU_PRIMARY = [
+  { id: "MENU_BOOK", key: "menuBook" },
+  { id: "MENU_ASSESS", key: "menuAssess" },
+  { id: "MENU_SERVICES", key: "menuServices" },
+  { id: "MENU_UPLOAD", key: "menuUpload" },
+  { id: "MENU_ABOUT", key: "menuAbout" },
+  { id: "MENU_CLINIC", key: "menuClinic" },
+  { id: "MENU_STAFF", key: "menuStaff" },
+  { id: "MENU_LANG", key: "menuLang" }
+];
+
+const MAIN_MENU_APPOINTMENT = [
+  { id: "MENU_CHECK", key: "menuCheck" },
+  { id: "MENU_RESCHEDULE", key: "menuReschedule" }
+];
+
+const MAIN_MENU_ORDER = [...MAIN_MENU_PRIMARY, ...MAIN_MENU_APPOINTMENT];
+
+function menuRow(lang, item) {
+  return {
+    id: item.id,
+    title: tr(lang, item.key).slice(0, ROW_TITLE_MAX),
+    description: tr(lang, `${item.key}Desc`).slice(0, ROW_DESC_MAX)
+  };
+}
+
 function mainMenu(language = "en") {
   const lang = language === "ur" ? "ur" : "en";
-  const rows = [
-    {
-      id: "MENU_BOOK",
-      title: tr(lang, "menuBook").slice(0, 24),
-      description: tr(lang, "menuBookDesc").slice(0, 72)
-    },
-    {
-      id: "MENU_ASSESS",
-      title: tr(lang, "menuAssess").slice(0, 24),
-      description: tr(lang, "menuAssessDesc").slice(0, 72)
-    },
-    {
-      id: "MENU_SERVICES",
-      title: tr(lang, "menuServices").slice(0, 24),
-      description: tr(lang, "menuServicesDesc").slice(0, 72)
-    },
-    {
-      id: "MENU_UPLOAD",
-      title: tr(lang, "menuUpload").slice(0, 24),
-      description: tr(lang, "menuUploadDesc").slice(0, 72)
-    },
-    {
-      id: "MENU_ABOUT",
-      title: tr(lang, "menuAbout").slice(0, 24),
-      description: tr(lang, "menuAboutDesc").slice(0, 72)
-    },
-    {
-      id: "MENU_CLINIC",
-      title: tr(lang, "menuClinic").slice(0, 24),
-      description: tr(lang, "menuClinicDesc").slice(0, 72)
-    },
-    {
-      id: "MENU_CHECK",
-      title: tr(lang, "menuCheck").slice(0, 24),
-      description: tr(lang, "menuCheckDesc").slice(0, 72)
-    },
-    {
-      id: "MENU_RESCHEDULE",
-      title: tr(lang, "menuReschedule").slice(0, 24),
-      description: tr(lang, "menuRescheduleDesc").slice(0, 72)
-    },
-    {
-      id: "MENU_STAFF",
-      title: tr(lang, "menuStaff").slice(0, 24),
-      description: tr(lang, "menuStaffDesc").slice(0, 72)
-    },
-    {
-      id: "MENU_LANG",
-      title: tr(lang, "menuLang").slice(0, 24),
-      description: tr(lang, "menuLangDesc").slice(0, 72)
-    }
-  ];
+  return {
+    kind: "list",
+    body: tr(lang, "welcome"),
+    buttonText: tr(lang, "openMenuButton").slice(0, BUTTON_TEXT_MAX),
+    sections: [
+      {
+        title: tr(lang, "menuSectionMain").slice(0, SECTION_TITLE_MAX),
+        rows: MAIN_MENU_PRIMARY.map((item) => menuRow(lang, item))
+      },
+      {
+        title: tr(lang, "menuSectionAppointment").slice(0, SECTION_TITLE_MAX),
+        rows: MAIN_MENU_APPOINTMENT.map((item) => menuRow(lang, item))
+      }
+    ]
+  };
+}
 
-  return list(
-    tr(lang, "welcome"),
-    rows,
-    tr(lang, "openMenuButton"),
-    lang === "ur" ? "کلینک مینو" : "Clinic Menu"
-  );
+// Used only when WhatsApp rejects an interactive list, so the patient is never
+// left without a usable reply. Rows are read back off the message that failed,
+// which keeps the fallback ordering identical to the interactive one.
+function listFallbackText(message, language = "en") {
+  const lang = language === "ur" ? "ur" : "en";
+  const rows = (message?.sections || []).flatMap((section) => section.rows || []);
+  const lines = rows.map((row, index) => `${index + 1}. ${row.title}`);
+  return text(`${message?.body || ""}\n\n${tr(lang, "menuFallbackIntro")}\n\n${lines.join("\n")}\n\n${tr(lang, "menuFallbackHint")}`);
+}
+
+function mainMenuFallbackText(language = "en") {
+  return listFallbackText(mainMenu(language), language);
+}
+
+// Maps a bare "3" from the text fallback back to its stable menu id.
+function menuIdFromNumber(value) {
+  const index = Number(String(value || "").trim());
+  if (!Number.isInteger(index) || index < 1 || index > MAIN_MENU_ORDER.length) return "";
+  return MAIN_MENU_ORDER[index - 1].id;
 }
 
 function doctorProfileCard(language = "en") {
@@ -216,5 +224,11 @@ module.exports = {
   concernList,
   displayTime,
   displayDate,
-  CONCERN_OPTIONS
+  mainMenuFallbackText,
+  listFallbackText,
+  menuIdFromNumber,
+  CONCERN_OPTIONS,
+  MAIN_MENU_PRIMARY,
+  MAIN_MENU_APPOINTMENT,
+  MAIN_MENU_ORDER
 };

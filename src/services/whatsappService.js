@@ -242,7 +242,15 @@ async function sendReplyButtons(to, body, buttons, options = {}) {
 
 async function sendInteractiveList(to, body, buttonText, sections, options = {}) {
   const phoneE164 = normalizePhone(to);
-  const normalizedSections = sections.map((section) => ({ ...section, rows: (section.rows || []).slice(0, 10) }));
+  // WhatsApp allows at most 10 rows across ALL sections, not 10 per section.
+  let remainingRows = 10;
+  const normalizedSections = [];
+  for (const section of sections) {
+    const rows = (section.rows || []).slice(0, Math.max(remainingRows, 0));
+    if (!rows.length) continue;
+    remainingRows -= rows.length;
+    normalizedSections.push({ ...section, rows });
+  }
   const payload = {
     messaging_product: "whatsapp", to: phoneE164.replace("+", ""), type: "interactive",
     interactive: { type: "list", body: { text: body }, action: { button: buttonText.slice(0, 20), sections: normalizedSections } }

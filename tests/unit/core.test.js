@@ -23,5 +23,5 @@ test("webhook verification tokens tolerate surrounding whitespace but reject emp
   assert.equal(verifyWebhookToken("", ""), false);
 });
 test("language selection uses stable IDs", () => assert.deepEqual(languageMessage().buttons.map((x) => x.id), ["LANG_EN", "LANG_UR"]));
-test("main menu uses an interactive list", () => { const menu = mainMenu("en"); assert.equal(menu.kind, "list"); assert.equal(menu.sections[0].rows.length, 10); assert.ok(menu.sections[0].rows.some((row) => row.id === "MENU_UPLOAD")); });
+test("main menu uses an interactive list", () => { const menu = mainMenu("en"); assert.equal(menu.kind, "list"); assert.equal(menu.sections.length, 2); const rows = menu.sections.flatMap((section) => section.rows); assert.equal(rows.length, 10); assert.ok(rows.some((row) => row.id === "MENU_UPLOAD")); });
 test("Urdu booking content does not fall back to English", () => assert.match(tr("ur", "bookStep1Name"), /[\u0600-\u06FF]/));
